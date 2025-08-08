@@ -180,3 +180,4 @@ func (h *AccountHandler) RegisterRoutes(router *gin.RouterGroup, authMiddleware 
 		accounts.POST("/fix-stats", authMiddleware, h.FixAllStats)
 	}
 }
+

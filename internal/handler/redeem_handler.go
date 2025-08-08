@@ -166,20 +166,29 @@ func (h *RedeemHandler) GetAllLogs(c *gin.Context) {
 		limit = 100
 	}
 
-	result, err := h.redeemService.GetAllLogs(limit)
+	// 支持通过查询参数 result=success|failed 过滤
+	resultFilter := c.DefaultQuery("result", "")
+
+	var srvResp *model.APIResponse
+	if resultFilter == "success" || resultFilter == "failed" || resultFilter == "" {
+		srvResp, err = h.redeemService.GetAllLogsFiltered(limit, resultFilter)
+	} else {
+		ErrorResponse(c, http.StatusBadRequest, false, "result 仅支持 success/failed 或留空")
+		return
+	}
+
 	if err != nil {
 		h.logger.Error("获取兑换日志失败", zap.Error(err))
 		ErrorResponse(c, http.StatusInternalServerError, false, "获取兑换日志失败")
 		return
 	}
 
-	if !result.Success {
-		ErrorResponse(c, http.StatusInternalServerError, false, result.Error)
+	if !srvResp.Success {
+		ErrorResponse(c, http.StatusInternalServerError, false, srvResp.Error)
 		return
 	}
 
-	// 计算统计信息（与Node版本对齐）
-	logs := result.Data.([]model.RedeemLog)
+	logs := srvResp.Data.([]model.RedeemLog)
 	successCount := 0
 	failedCount := 0
 	for _, log := range logs {
@@ -190,18 +199,15 @@ func (h *RedeemHandler) GetAllLogs(c *gin.Context) {
 		}
 	}
 
-	// 返回与Node版本一致的格式
-	response := gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    logs, // logs数组
+		"data":    logs,
 		"stats": map[string]int{
 			"total":   len(logs),
 			"success": successCount,
 			"failed":  failedCount,
 		},
-	}
-
-	c.JSON(http.StatusOK, response)
+	})
 }
 
 // GetAccountsForRedeemCode 获取兑换码的账号处理状态（与Node版本对齐）
@@ -383,6 +389,8 @@ func (h *RedeemHandler) RegisterRoutes(router *gin.RouterGroup, authMiddleware g
 		redeem.DELETE("", authMiddleware, h.BulkDeleteRedeemCodes)
 
 		// 重试兑换码（需要管理员权限）
+		// 新风格统一入口：POST /api/redeem/retry，Body: {"ids": [1,2,...]}
+		redeem.POST("/retry", authMiddleware, h.RetryRedeemCode)
 		redeem.POST("/:id/retry", authMiddleware, h.RetryRedeemCode)
 	}
 }

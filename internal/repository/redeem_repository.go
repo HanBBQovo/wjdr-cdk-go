@@ -74,6 +74,40 @@ func (r *RedeemRepository) GetAllRedeemCodes(limit, offset int) ([]model.RedeemC
 	return codes, nil
 }
 
+// GetAllRedeemCodesAll 获取全部兑换码（不分页）
+func (r *RedeemRepository) GetAllRedeemCodesAll() ([]model.RedeemCode, error) {
+	query := `SELECT id, code, status, is_long, total_accounts, success_count, failed_count, created_at 
+              FROM redeem_codes ORDER BY created_at DESC`
+
+	rows, err := r.db.Query(query)
+	if err != nil {
+		r.logger.Error("查询兑换码列表失败", zap.Error(err))
+		return nil, err
+	}
+	defer rows.Close()
+
+	var codes []model.RedeemCode
+	for rows.Next() {
+		var code model.RedeemCode
+		err := rows.Scan(
+			&code.ID,
+			&code.Code,
+			&code.Status,
+			&code.IsLong,
+			&code.TotalAccounts,
+			&code.SuccessCount,
+			&code.FailedCount,
+			&code.CreatedAt,
+		)
+		if err != nil {
+			r.logger.Error("扫描兑换码数据失败", zap.Error(err))
+			return nil, err
+		}
+		codes = append(codes, code)
+	}
+	return codes, nil
+}
+
 // FindRedeemCodeByID 通过ID查找兑换码
 func (r *RedeemRepository) FindRedeemCodeByID(id int) (*model.RedeemCode, error) {
 	query := `SELECT id, code, status, is_long, total_accounts, success_count, failed_count, created_at 

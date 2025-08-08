@@ -203,3 +203,4 @@ func (s *CronService) supplementRedeemCodes() {
 		zap.Int("submitted_count", supplementCount),
 		zap.Int("total_codes", len(completedCodes)))
 }
+

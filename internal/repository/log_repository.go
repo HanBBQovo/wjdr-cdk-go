@@ -252,6 +252,58 @@ func (r *LogRepository) GetRecentLogs(limit int) ([]model.RedeemLog, error) {
 	return logs, nil
 }
 
+// GetRecentLogsFiltered 获取最近的兑换记录并按结果过滤（result 可为 "success" 或 "failed"；空字符串表示不过滤）
+func (r *LogRepository) GetRecentLogsFiltered(limit int, result string) ([]model.RedeemLog, error) {
+	var (
+		query string
+		rows  *sql.Rows
+		err   error
+	)
+
+	if result == "" {
+		// 无过滤时与 GetRecentLogs 一致
+		query = `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message,
+                 captcha_recognized, processing_time, err_code, redeemed_at
+                 FROM redeem_logs ORDER BY redeemed_at DESC LIMIT ?`
+		rows, err = r.db.Query(query, limit)
+	} else {
+		query = `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message,
+                 captcha_recognized, processing_time, err_code, redeemed_at
+                 FROM redeem_logs WHERE result = ? ORDER BY redeemed_at DESC LIMIT ?`
+		rows, err = r.db.Query(query, result, limit)
+	}
+	if err != nil {
+		r.logger.Error("查询最近兑换记录失败", zap.Error(err))
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []model.RedeemLog
+	for rows.Next() {
+		var log model.RedeemLog
+		err := rows.Scan(
+			&log.ID,
+			&log.RedeemCodeID,
+			&log.GameAccountID,
+			&log.FID,
+			&log.Code,
+			&log.Result,
+			&log.ErrorMessage,
+			&log.SuccessMessage,
+			&log.CaptchaRecognized,
+			&log.ProcessingTime,
+			&log.ErrCode,
+			&log.RedeemedAt,
+		)
+		if err != nil {
+			r.logger.Error("扫描最近兑换记录失败", zap.Error(err))
+			return nil, err
+		}
+		logs = append(logs, log)
+	}
+	return logs, nil
+}
+
 // DeleteLogsByRedeemCodeID 根据兑换码ID删除所有相关日志
 func (r *LogRepository) DeleteLogsByRedeemCodeID(redeemCodeID int) (int, error) {
 	query := `DELETE FROM redeem_logs WHERE redeem_code_id = ?`

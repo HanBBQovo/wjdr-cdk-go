@@ -111,3 +111,4 @@ func SuccessResponseWithMessage(c *gin.Context, message string, data interface{}
 
 	c.JSON(http.StatusOK, response)
 }
+

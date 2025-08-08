@@ -171,11 +171,29 @@ func (s *RedeemService) SubmitRedeemCode(code string, isLong bool) (*model.APIRe
 
 // GetAllRedeemCodes 获取兑换码列表（与Node版本对齐）
 func (s *RedeemService) GetAllRedeemCodes(page, limit int) (*model.PaginationResponse, error) {
+	// 支持前端请求不分页：当 limit <= 0 或传入非常大的 limit 时，返回全部
+	if limit <= 0 || limit >= 1000000 {
+		codes, err := s.redeemRepo.GetAllRedeemCodesAll()
+		if err != nil {
+			s.logger.Error("获取兑换码列表失败", zap.Error(err))
+			return &model.PaginationResponse{Success: false, Data: nil}, err
+		}
+		return &model.PaginationResponse{
+			Success: true,
+			Data:    codes,
+			Pagination: model.Pagination{
+				Page:   1,
+				Limit:  len(codes),
+				Offset: 0,
+			},
+		}, nil
+	}
+
 	if page <= 0 {
 		page = 1
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 20
+	if limit > 1000 { // 放宽上限
+		limit = 1000
 	}
 
 	offset := (page - 1) * limit
@@ -183,20 +201,13 @@ func (s *RedeemService) GetAllRedeemCodes(page, limit int) (*model.PaginationRes
 	codes, err := s.redeemRepo.GetAllRedeemCodes(limit, offset)
 	if err != nil {
 		s.logger.Error("获取兑换码列表失败", zap.Error(err))
-		return &model.PaginationResponse{
-			Success: false,
-			Data:    nil,
-		}, err
+		return &model.PaginationResponse{Success: false, Data: nil}, err
 	}
 
 	return &model.PaginationResponse{
-		Success: true,
-		Data:    codes,
-		Pagination: model.Pagination{
-			Page:   page,
-			Limit:  limit,
-			Offset: offset,
-		},
+		Success:    true,
+		Data:       codes,
+		Pagination: model.Pagination{Page: page, Limit: limit, Offset: offset},
 	}, nil
 }
 
@@ -247,6 +258,7 @@ func (s *RedeemService) GetAllLogs(limit int) (*model.APIResponse, error) {
 		limit = 100
 	}
 
+	// 此处仅保留原方法，按旧逻辑返回最近日志列表
 	logs, err := s.logRepo.GetRecentLogs(limit)
 	if err != nil {
 		s.logger.Error("获取兑换日志失败", zap.Error(err))
@@ -271,6 +283,25 @@ func (s *RedeemService) GetAllLogs(limit int) (*model.APIResponse, error) {
 		Success: true,
 		Data:    logs, // 直接返回logs数组，与Node版本格式一致
 	}, nil
+}
+
+// GetAllLogsFiltered 获取全部日志，并支持通过 result=success|failed 过滤
+func (s *RedeemService) GetAllLogsFiltered(limit int, result string) (*model.APIResponse, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+
+	if result != "success" && result != "failed" && result != "" {
+		return &model.APIResponse{Success: false, Error: "result 参数仅支持 success/failed 或留空"}, nil
+	}
+
+	logs, err := s.logRepo.GetRecentLogsFiltered(limit, result)
+	if err != nil {
+		s.logger.Error("获取兑换日志失败", zap.Error(err))
+		return &model.APIResponse{Success: false, Error: "获取兑换日志失败"}, err
+	}
+
+	return &model.APIResponse{Success: true, Data: logs}, nil
 }
 
 // DeleteRedeemCode 删除兑换码（与Node版本对齐）
