@@ -165,7 +165,7 @@ func main() {
 		}
 
 		// 测试查询兑换码数量
-		codes, err := redeemRepo.GetAllRedeemCodes(10, 0)
+		codes, err := redeemRepo.GetAllRedeemCodesAll()
 		if err != nil {
 			c.JSON(500, gin.H{"error": "查询兑换码失败", "details": err.Error()})
 			return

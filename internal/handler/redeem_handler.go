@@ -71,24 +71,10 @@ func (h *RedeemHandler) SubmitRedeemCode(c *gin.Context) {
 	SuccessResponseWithMessage(c, result.Message, result.Data)
 }
 
-// GetAllRedeemCodes 获取兑换码列表（与Node版本对齐）
+// GetAllRedeemCodes 获取兑换码列表（去除分页）
 // GET /api/redeem
 func (h *RedeemHandler) GetAllRedeemCodes(c *gin.Context) {
-	// 解析分页参数
-	pageStr := c.DefaultQuery("page", "1")
-	limitStr := c.DefaultQuery("limit", "20")
-
-	page, err := strconv.Atoi(pageStr)
-	if err != nil || page < 1 {
-		page = 1
-	}
-
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit < 1 || limit > 100 {
-		limit = 20
-	}
-
-	result, err := h.redeemService.GetAllRedeemCodes(page, limit)
+	result, err := h.redeemService.GetAllRedeemCodes()
 	if err != nil {
 		h.logger.Error("获取兑换码列表失败", zap.Error(err))
 		ErrorResponse(c, http.StatusInternalServerError, false, "获取兑换码列表失败")
@@ -157,21 +143,22 @@ func (h *RedeemHandler) GetRedeemCodeLogs(c *gin.Context) {
 	SuccessResponse(c, result.Data)
 }
 
-// GetAllLogs 获取所有兑换日志（与Node版本对齐）
+// GetAllLogs 获取所有兑换日志（去除分页，保留result过滤）
 // GET /api/redeem/logs
 func (h *RedeemHandler) GetAllLogs(c *gin.Context) {
-	limitStr := c.DefaultQuery("limit", "100")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit < 1 || limit > 1000 {
-		limit = 100
-	}
-
 	// 支持通过查询参数 result=success|failed 过滤
 	resultFilter := c.DefaultQuery("result", "")
 
-	var srvResp *model.APIResponse
+	var (
+		srvResp *model.APIResponse
+		err     error
+	)
 	if resultFilter == "success" || resultFilter == "failed" || resultFilter == "" {
-		srvResp, err = h.redeemService.GetAllLogsFiltered(limit, resultFilter)
+		if resultFilter == "" {
+			srvResp, err = h.redeemService.GetAllLogs()
+		} else {
+			srvResp, err = h.redeemService.GetAllLogsFiltered(resultFilter)
+		}
 	} else {
 		ErrorResponse(c, http.StatusBadRequest, false, "result 仅支持 success/failed 或留空")
 		return

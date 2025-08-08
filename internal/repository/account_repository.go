@@ -282,6 +282,62 @@ func (r *AccountRepository) Delete(id int) error {
 	return fmt.Errorf("删除账号在重试 %d 次后仍失败（死锁）", maxRetries)
 }
 
+// BulkDelete 批量删除账号（带统计更新）
+func (r *AccountRepository) BulkDelete(ids []int) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	// 事务：删除所有账号对应的redeem_logs，再删除账号，最后批量更新受影响兑换码统计
+	tx, err := r.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+
+	// 收集受影响兑换码
+	affectedMap := make(map[int]struct{})
+	for _, id := range ids {
+		rows, err := tx.Query(`SELECT DISTINCT redeem_code_id FROM redeem_logs WHERE game_account_id = ?`, id)
+		if err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+		for rows.Next() {
+			var codeID int
+			if err := rows.Scan(&codeID); err != nil {
+				rows.Close()
+				tx.Rollback()
+				return 0, err
+			}
+			affectedMap[codeID] = struct{}{}
+		}
+		rows.Close()
+
+		if _, err := tx.Exec(`DELETE FROM redeem_logs WHERE game_account_id = ?`, id); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+		if _, err := tx.Exec(`DELETE FROM game_accounts WHERE id = ?`, id); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
+
+	// 更新受影响兑换码统计
+	for codeID := range affectedMap {
+		if err := r.updateRedeemCodeStats(tx, codeID); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
+	return len(ids), nil
+}
+
 // updateRedeemCodeStats 重新计算兑换码统计数据（与Node版本对齐）
 func (r *AccountRepository) updateRedeemCodeStats(tx *sql.Tx, redeemCodeID int) error {
 	statsQuery := `

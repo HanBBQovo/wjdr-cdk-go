@@ -140,6 +140,35 @@ func (h *AccountHandler) DeleteAccount(c *gin.Context) {
 	SuccessResponseWithMessage(c, result.Message, nil)
 }
 
+// BulkDeleteAccounts 批量删除账号（与兑换码批量接口风格保持一致）
+// DELETE /api/accounts
+func (h *AccountHandler) BulkDeleteAccounts(c *gin.Context) {
+	var request struct {
+		IDs []int `json:"ids" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil || len(request.IDs) == 0 {
+		ErrorResponse(c, http.StatusBadRequest, false, "请提供要删除的账号ID列表")
+		return
+	}
+
+	h.logger.Info("🗑️ 收到批量删除账号请求", zap.Int("count", len(request.IDs)))
+
+	result, err := h.accountService.BulkDeleteAccounts(request.IDs)
+	if err != nil {
+		h.logger.Error("批量删除账号失败", zap.Error(err))
+		ErrorResponse(c, http.StatusInternalServerError, false, "批量删除账号失败")
+		return
+	}
+
+	if !result.Success {
+		ErrorResponse(c, http.StatusBadRequest, false, result.Error)
+		return
+	}
+
+	SuccessResponseWithMessage(c, result.Message, result.Data)
+}
+
 // FixAllStats 修复所有兑换码统计（与Node版本对齐）
 // POST /api/accounts/fix-stats
 func (h *AccountHandler) FixAllStats(c *gin.Context) {
@@ -175,9 +204,10 @@ func (h *AccountHandler) RegisterRoutes(router *gin.RouterGroup, authMiddleware 
 
 		// 删除账号（需要管理员权限）
 		accounts.DELETE("/:id", authMiddleware, h.DeleteAccount)
+		// 批量删除账号（需要管理员权限）
+		accounts.DELETE("", authMiddleware, h.BulkDeleteAccounts)
 
 		// 修复统计（需要管理员权限）
 		accounts.POST("/fix-stats", authMiddleware, h.FixAllStats)
 	}
 }
-

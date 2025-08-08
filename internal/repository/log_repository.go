@@ -252,7 +252,7 @@ func (r *LogRepository) GetRecentLogs(limit int) ([]model.RedeemLog, error) {
 	return logs, nil
 }
 
-// GetRecentLogsFiltered 获取最近的兑换记录并按结果过滤（result 可为 "success" 或 "failed"；空字符串表示不过滤）
+// GetRecentLogsFiltered 获取最近的兑换记录并按结果过滤（已废弃，保留以兼容旧代码）
 func (r *LogRepository) GetRecentLogsFiltered(limit int, result string) ([]model.RedeemLog, error) {
 	var (
 		query string
@@ -297,6 +297,96 @@ func (r *LogRepository) GetRecentLogsFiltered(limit int, result string) ([]model
 		)
 		if err != nil {
 			r.logger.Error("扫描最近兑换记录失败", zap.Error(err))
+			return nil, err
+		}
+		logs = append(logs, log)
+	}
+	return logs, nil
+}
+
+// GetAllLogs 获取全部兑换记录（去除分页）
+func (r *LogRepository) GetAllLogs() ([]model.RedeemLog, error) {
+	query := `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message,
+              captcha_recognized, processing_time, err_code, redeemed_at
+              FROM redeem_logs ORDER BY redeemed_at DESC`
+
+	rows, err := r.db.Query(query)
+	if err != nil {
+		r.logger.Error("查询兑换记录失败", zap.Error(err))
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []model.RedeemLog
+	for rows.Next() {
+		var log model.RedeemLog
+		err := rows.Scan(
+			&log.ID,
+			&log.RedeemCodeID,
+			&log.GameAccountID,
+			&log.FID,
+			&log.Code,
+			&log.Result,
+			&log.ErrorMessage,
+			&log.SuccessMessage,
+			&log.CaptchaRecognized,
+			&log.ProcessingTime,
+			&log.ErrCode,
+			&log.RedeemedAt,
+		)
+		if err != nil {
+			r.logger.Error("扫描兑换记录失败", zap.Error(err))
+			return nil, err
+		}
+		logs = append(logs, log)
+	}
+	return logs, nil
+}
+
+// GetAllLogsFiltered 获取全部兑换记录并按结果过滤（去除分页）
+func (r *LogRepository) GetAllLogsFiltered(result string) ([]model.RedeemLog, error) {
+	var (
+		query string
+		rows  *sql.Rows
+		err   error
+	)
+
+	if result == "" {
+		query = `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message,
+                 captcha_recognized, processing_time, err_code, redeemed_at
+                 FROM redeem_logs ORDER BY redeemed_at DESC`
+		rows, err = r.db.Query(query)
+	} else {
+		query = `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message,
+                 captcha_recognized, processing_time, err_code, redeemed_at
+                 FROM redeem_logs WHERE result = ? ORDER BY redeemed_at DESC`
+		rows, err = r.db.Query(query, result)
+	}
+	if err != nil {
+		r.logger.Error("查询兑换记录失败", zap.Error(err))
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []model.RedeemLog
+	for rows.Next() {
+		var log model.RedeemLog
+		err := rows.Scan(
+			&log.ID,
+			&log.RedeemCodeID,
+			&log.GameAccountID,
+			&log.FID,
+			&log.Code,
+			&log.Result,
+			&log.ErrorMessage,
+			&log.SuccessMessage,
+			&log.CaptchaRecognized,
+			&log.ProcessingTime,
+			&log.ErrCode,
+			&log.RedeemedAt,
+		)
+		if err != nil {
+			r.logger.Error("扫描兑换记录失败", zap.Error(err))
 			return nil, err
 		}
 		logs = append(logs, log)

@@ -94,18 +94,7 @@ type APIResponse struct {
 	Message string      `json:"message,omitempty"`
 }
 
-// 分页响应
-type PaginationResponse struct {
-	Success    bool        `json:"success"`
-	Data       interface{} `json:"data"`
-	Pagination Pagination  `json:"pagination"`
-}
-
-type Pagination struct {
-	Page   int `json:"page"`
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
-}
+// 以前的分页响应与分页结构已移除（不再分页）
 
 // 账号验证响应
 type AccountVerifyResponse struct {

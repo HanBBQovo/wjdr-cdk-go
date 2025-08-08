@@ -274,6 +274,30 @@ func (s *AccountService) DeleteAccount(id int) (*model.APIResponse, error) {
 	}, nil
 }
 
+// BulkDeleteAccounts 批量删除账号
+func (s *AccountService) BulkDeleteAccounts(ids []int) (*model.APIResponse, error) {
+	if len(ids) == 0 {
+		return &model.APIResponse{Success: false, Error: "请提供要删除的账号ID列表"}, nil
+	}
+
+	deletedCount, err := s.accountRepo.BulkDelete(ids)
+	if err != nil {
+		s.logger.Error("批量删除账号失败", zap.Error(err))
+		return &model.APIResponse{Success: false, Error: "批量删除账号失败"}, err
+	}
+
+	// 删除后做一次统计修复（与单个删除保持一致的最终一致性策略）
+	if _, fixErr := s.accountRepo.FixAllRedeemCodeStats(); fixErr != nil {
+		s.logger.Warn("批量删除账号后修复统计失败", zap.Error(fixErr))
+	}
+
+	return &model.APIResponse{
+		Success: true,
+		Message: "批量删除账号成功",
+		Data:    map[string]interface{}{"deletedCount": deletedCount},
+	}, nil
+}
+
 // FixAllStats 修复所有兑换码统计（与Node版本对齐）
 func (s *AccountService) FixAllStats() (*model.APIResponse, error) {
 	s.logger.Info("🔧 开始修复所有兑换码统计")
