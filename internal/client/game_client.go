@@ -17,11 +17,12 @@ import (
 
 // GameClient 游戏API客户端（完全复刻Node版本逻辑）
 type GameClient struct {
-	salt    string
-	baseURL string
-	fid     string
-	client  *http.Client
-	logger  *zap.Logger
+	salt     string
+	baseURL  string
+	fid      string
+	nickname string
+	client   *http.Client
+	logger   *zap.Logger
 }
 
 // GameResponse 游戏API通用响应
@@ -239,16 +240,14 @@ func (c *GameClient) Login(fid string) (*GameResult, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		c.logger.Error("❌ 登录HTTP状态异常",
-			zap.Int("status", resp.StatusCode),
-			zap.String("raw_body", string(body)))
+			zap.Int("status", resp.StatusCode))
 		return &GameResult{Success: false, Error: "服务器繁忙", ErrCode: 40101}, nil
 	}
 
 	var gameResp GameResponse
 	if err := json.Unmarshal(body, &gameResp); err != nil {
 		c.logger.Error("❌ 登录响应解析失败",
-			zap.Error(err),
-			zap.String("raw_body", string(body)))
+			zap.Error(err))
 		return &GameResult{Success: false, Error: "服务器繁忙", ErrCode: 40101}, nil
 	}
 
@@ -259,6 +258,7 @@ func (c *GameClient) Login(fid string) (*GameResult, error) {
 		dataBytes, _ := json.Marshal(gameResp.Data)
 		var userData LoginData
 		json.Unmarshal(dataBytes, &userData)
+		c.nickname = userData.Nickname
 
 		// 降噪：登录成功改为调试级别
 		c.logger.Debug("✅ 登录成功！",
@@ -291,8 +291,7 @@ func (c *GameClient) Login(fid string) (*GameResult, error) {
 
 		c.logger.Error("❌ 登录失败",
 			zap.String("error", errorText),
-			zap.Int("err_code", errCodeInt),
-			zap.Any("raw_msg", gameResp.Msg))
+			zap.Int("err_code", errCodeInt))
 
 		return &GameResult{
 			Success: false,
@@ -313,7 +312,9 @@ func (c *GameClient) GetCaptcha() (*GameResult, error) {
 	data.Set("sign", sign)
 
 	// 降噪：获取验证码改为调试级别
-	c.logger.Debug("🔍 获取验证码...")
+	c.logger.Debug("🔍 获取验证码...",
+		zap.String("fid", c.fid),
+		zap.String("user", c.nickname))
 
 	req, err := http.NewRequest("POST", c.baseURL+"/captcha", strings.NewReader(data.Encode()))
 	if err != nil {
@@ -340,16 +341,14 @@ func (c *GameClient) GetCaptcha() (*GameResult, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		c.logger.Error("❌ 获取验证码HTTP状态异常",
-			zap.Int("status", resp.StatusCode),
-			zap.String("raw_body", string(body)))
+			zap.Int("status", resp.StatusCode))
 		return &GameResult{Success: false, Error: "服务器繁忙", ErrCode: 40101}, nil
 	}
 
 	var gameResp GameResponse
 	if err := json.Unmarshal(body, &gameResp); err != nil {
 		c.logger.Error("❌ 获取验证码响应解析失败",
-			zap.Error(err),
-			zap.String("raw_body", string(body)))
+			zap.Error(err))
 		return &GameResult{Success: false, Error: "服务器繁忙", ErrCode: 40101}, nil
 	}
 
@@ -382,12 +381,14 @@ func (c *GameClient) GetCaptcha() (*GameResult, error) {
 			c.logger.Warn("⚠️ 验证码获取过多，需要重新登录",
 				zap.String("error", errorText),
 				zap.Int("err_code", errCodeInt),
-				zap.Any("raw_msg", gameResp.Msg))
+				zap.String("fid", c.fid),
+				zap.String("user", c.nickname))
 		} else {
 			c.logger.Error("❌ 获取验证码失败",
 				zap.String("error", errorText),
 				zap.Int("err_code", errCodeInt),
-				zap.Any("raw_msg", gameResp.Msg))
+				zap.String("fid", c.fid),
+				zap.String("user", c.nickname))
 		}
 
 		return &GameResult{
@@ -413,7 +414,9 @@ func (c *GameClient) RedeemCode(giftCode, captchaValue string) (*GameResult, err
 	// 降噪：兑换动作改为调试级别
 	c.logger.Debug("🎁 兑换礼品码",
 		zap.String("code", giftCode),
-		zap.String("captcha", captchaValue))
+		zap.String("captcha", captchaValue),
+		zap.String("fid", c.fid),
+		zap.String("user", c.nickname))
 
 	req, err := http.NewRequest("POST", c.baseURL+"/gift_code", strings.NewReader(data.Encode()))
 	if err != nil {
@@ -440,16 +443,14 @@ func (c *GameClient) RedeemCode(giftCode, captchaValue string) (*GameResult, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		c.logger.Error("❌ 兑换HTTP状态异常",
-			zap.Int("status", resp.StatusCode),
-			zap.String("raw_body", string(body)))
+			zap.Int("status", resp.StatusCode))
 		return &GameResult{Success: false, Error: "服务器繁忙", ErrCode: 40101}, nil
 	}
 
 	var gameResp GameResponse
 	if err := json.Unmarshal(body, &gameResp); err != nil {
 		c.logger.Error("❌ 兑换响应解析失败",
-			zap.Error(err),
-			zap.String("raw_body", string(body)))
+			zap.Error(err))
 		return &GameResult{Success: false, Error: "服务器繁忙", ErrCode: 40101}, nil
 	}
 
@@ -462,9 +463,12 @@ func (c *GameClient) RedeemCode(giftCode, captchaValue string) (*GameResult, err
 		var redeemData RedeemData
 		json.Unmarshal(dataBytes, &redeemData)
 
-		// 降噪：兑换成功改为调试级别
-		c.logger.Debug("✅ 兑换成功！",
-			zap.String("reward", redeemData.Reward))
+		// 兑换成功改为 info 并带上用户标识
+		c.logger.Info("✅ 兑换成功",
+			zap.String("reward", redeemData.Reward),
+			zap.String("fid", c.fid),
+			zap.String("user", c.nickname),
+			zap.String("code", giftCode))
 
 		return &GameResult{
 			Success: true,
@@ -477,12 +481,6 @@ func (c *GameClient) RedeemCode(giftCode, captchaValue string) (*GameResult, err
 	} else {
 		errorText := c.getErrorMessage(errCodeInt)
 
-		// 如果是 40004，输出原始响应，便于进一步诊断
-		if errCodeInt == 40004 {
-			c.logger.Error("🧾 40004 原始响应",
-				zap.Any("raw_response", gameResp),
-				zap.String("raw_body", string(body)))
-		}
 		msgStr := c.messageToString(gameResp.Msg)
 		if strings.HasPrefix(errorText, "未知错误") && msgStr != "" {
 			errorText = fmt.Sprintf("%s | msg: %s", errorText, msgStr)
@@ -497,31 +495,33 @@ func (c *GameClient) RedeemCode(giftCode, captchaValue string) (*GameResult, err
 		// 根据错误码提供详细信息（与Node逻辑一致）
 		switch errCodeInt {
 		case 40005:
-			c.logger.Info("🚫 账号超出领取次数", zap.String("code", giftCode))
+			c.logger.Info("🚫 账号超出领取次数", zap.String("code", giftCode), zap.String("fid", c.fid), zap.String("user", c.nickname))
 		case 40006:
-			c.logger.Info("🎯 不满足活动领取条件", zap.String("code", giftCode))
+			c.logger.Info("🎯 不满足活动领取条件", zap.String("code", giftCode), zap.String("fid", c.fid), zap.String("user", c.nickname))
 		case 40008:
-			c.logger.Info("💫 账号已兑换过", zap.String("code", giftCode))
+			c.logger.Info("💫 账号已兑换过", zap.String("code", giftCode), zap.String("fid", c.fid), zap.String("user", c.nickname))
 		case 40011:
-			c.logger.Info("🔄 账号已兑换过同类型兑换码", zap.String("code", giftCode))
+			c.logger.Info("🔄 账号已兑换过同类型兑换码", zap.String("code", giftCode), zap.String("fid", c.fid), zap.String("user", c.nickname))
 		case 40103:
 			c.logger.Error("🤖 验证码识别错误",
 				zap.String("captcha", captchaValue),
 				zap.String("error", errorText),
-				zap.Any("raw_msg", gameResp.Msg))
+				zap.String("fid", c.fid),
+				zap.String("user", c.nickname))
 		case 40009:
-			c.logger.Error("🔐 登录状态失效", zap.String("error", errorText), zap.Any("raw_msg", gameResp.Msg))
+			c.logger.Error("🔐 登录状态失效", zap.String("error", errorText), zap.String("fid", c.fid), zap.String("user", c.nickname))
 		case 40101:
-			c.logger.Error("🔄 服务器繁忙", zap.String("error", errorText), zap.Any("raw_msg", gameResp.Msg))
+			c.logger.Error("🔄 服务器繁忙", zap.String("error", errorText), zap.String("fid", c.fid), zap.String("user", c.nickname))
 		case 40007:
-			c.logger.Error("⏰ 兑换码已过期", zap.String("code", giftCode))
+			c.logger.Error("⏰ 兑换码已过期", zap.String("code", giftCode), zap.String("fid", c.fid), zap.String("user", c.nickname))
 		case 40014:
-			c.logger.Error("❓ 兑换码不存在", zap.String("code", giftCode))
+			c.logger.Error("❓ 兑换码不存在", zap.String("code", giftCode), zap.String("fid", c.fid), zap.String("user", c.nickname))
 		default:
 			c.logger.Error("❌ 兑换失败",
 				zap.String("error", errorText),
 				zap.Int("err_code", errCodeInt),
-				zap.Any("raw_msg", gameResp.Msg))
+				zap.String("fid", c.fid),
+				zap.String("user", c.nickname))
 		}
 
 		return &GameResult{

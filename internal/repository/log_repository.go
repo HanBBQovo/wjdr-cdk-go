@@ -454,3 +454,20 @@ func (r *LogRepository) GetLogStats(redeemCodeID int) (total, success, failed in
 
 	return total, success, failed, nil
 }
+
+// GetGlobalLogStats 获取全局日志统计（不按兑换码）
+func (r *LogRepository) GetGlobalLogStats() (total, success, failed int, err error) {
+	query := `
+        SELECT 
+            COUNT(*) as total,
+            COALESCE(SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END), 0) as success_count,
+            COALESCE(SUM(CASE WHEN result = 'failed' THEN 1 ELSE 0 END), 0) as failed_count
+        FROM redeem_logs`
+
+	row := r.db.QueryRow(query)
+	if err := row.Scan(&total, &success, &failed); err != nil {
+		r.logger.Error("获取全局兑换统计失败", zap.Error(err))
+		return 0, 0, 0, err
+	}
+	return total, success, failed, nil
+}

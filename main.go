@@ -25,8 +25,11 @@ func main() {
 	// 加载配置
 	cfg := config.Load()
 
-	// 初始化日志
-	logger, err := zap.NewProduction()
+	// 初始化日志（禁用错误级别堆栈）
+	cfgZap := zap.NewProductionConfig()
+	cfgZap.DisableStacktrace = true
+	cfgZap.EncoderConfig.StacktraceKey = ""
+	logger, err := cfgZap.Build(zap.AddStacktrace(zap.PanicLevel))
 	if err != nil {
 		log.Fatalf("初始化日志失败: %v", err)
 	}

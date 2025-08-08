@@ -227,7 +227,7 @@ func (s *RedeemService) GetAllLogs() (*model.APIResponse, error) {
 		s.logger.Error("获取兑换日志失败", zap.Error(err))
 		return &model.APIResponse{Success: false, Error: "获取兑换日志失败"}, err
 	}
-	return &model.APIResponse{Success: true, Data: logs}, nil
+	return &model.APIResponse{Success: true, Data: logs, Message: "ok"}, nil
 }
 
 // GetAllLogsFiltered 获取全部日志，并支持通过 result=success|failed 过滤（去除分页/限制）
@@ -242,6 +242,11 @@ func (s *RedeemService) GetAllLogsFiltered(result string) (*model.APIResponse, e
 		return &model.APIResponse{Success: false, Error: "获取兑换日志失败"}, err
 	}
 	return &model.APIResponse{Success: true, Data: logs}, nil
+}
+
+// GetGlobalLogStats 获取全局日志统计（不受过滤影响）
+func (s *RedeemService) GetGlobalLogStats() (total, success, failed int, err error) {
+	return s.logRepo.GetGlobalLogStats()
 }
 
 // DeleteRedeemCode 删除兑换码（与Node版本对齐）

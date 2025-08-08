@@ -176,23 +176,41 @@ func (h *RedeemHandler) GetAllLogs(c *gin.Context) {
 	}
 
 	logs := srvResp.Data.([]model.RedeemLog)
-	successCount := 0
-	failedCount := 0
-	for _, log := range logs {
-		if log.Result == "success" {
-			successCount++
-		} else {
-			failedCount++
-		}
+	// 全局统计（不受过滤影响）
+	total, successCnt, failedCnt, statErr := h.redeemService.GetGlobalLogStats()
+	if statErr != nil {
+		h.logger.Error("获取全局兑换统计失败", zap.Error(statErr))
 	}
-
+	if resultFilter == "" {
+		// 未过滤：按全量结果统计
+		successCount := 0
+		failedCount := 0
+		for _, log := range logs {
+			if log.Result == "success" {
+				successCount++
+			} else {
+				failedCount++
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data":    logs,
+			"stats": map[string]int{
+				"total":   len(logs),
+				"success": successCount,
+				"failed":  failedCount,
+			},
+		})
+		return
+	}
+	// 过滤：total 使用全局总量，success/failed 使用全局统计，便于Tab显示稳定
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    logs,
 		"stats": map[string]int{
-			"total":   len(logs),
-			"success": successCount,
-			"failed":  failedCount,
+			"total":   total,
+			"success": successCnt,
+			"failed":  failedCnt,
 		},
 	})
 }
