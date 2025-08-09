@@ -43,14 +43,8 @@ type OCRRecognizeResponse struct {
 }
 
 // OCRError 带错误码的错误类型（用于上层判断额度用尽等场景）
-type OCRError struct {
-	Code int
-	Msg  string
-}
-
-func (e *OCRError) Error() string {
-	return fmt.Sprintf("[%d] %s", e.Code, e.Msg)
-}
+// 兼容旧引用：保留类型名，但内部代理到新结构，避免跨文件重名
+// 注意：新统一结构定义于 ocr_error.go
 
 func NewOCRClient(apiKey, secretKey string, logger *zap.Logger) *OCRClient {
 	return &OCRClient{

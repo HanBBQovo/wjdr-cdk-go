@@ -3,6 +3,7 @@ package client
 import (
 	"errors"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 	"wjdr-backend-go/internal/model"
@@ -17,9 +18,9 @@ type OCRRecognizer interface {
 
 // weightedKey 内部结构体
 type weightedKey struct {
-	key     model.OCRKey
-	client  *OCRClient
-	current int // 平滑加权轮询当前值
+	key        model.OCRKey
+	recognizer OCRRecognizer
+	current    int // 平滑加权轮询当前值
 }
 
 // OCRKeyManager 多 Key 调度器（线程安全）
@@ -49,11 +50,19 @@ func (m *OCRKeyManager) Reload(keys []model.OCRKey) {
 		if !k.IsActive || !k.HasQuota || k.Weight <= 0 {
 			continue
 		}
-		wk := &weightedKey{
-			key:     k,
-			client:  NewOCRClient(k.APIKey, k.SecretKey, m.logger),
-			current: 0,
+		var recognizer OCRRecognizer
+		provider := strings.ToLower(strings.TrimSpace(k.Provider))
+		if provider == "" {
+			provider = "baidu"
 		}
+		if factory, ok := getOCRProvider(provider); ok {
+			recognizer = factory(k.APIKey, k.SecretKey, "", m.logger)
+		} else {
+			// 未注册的 provider：跳过（未来可通过配置/插件注册）
+			m.logger.Warn("未注册的OCR Provider，已跳过", zap.String("provider", provider))
+			continue
+		}
+		wk := &weightedKey{key: k, recognizer: recognizer, current: 0}
 		m.keys = append(m.keys, wk)
 		// 剩余额度越高，实际权重可适当抬升（简易：剩余占比 * weight）
 		effWeight := k.Weight
@@ -107,7 +116,7 @@ func (m *OCRKeyManager) RecognizeCaptcha(base64Image string) (string, error) {
 		if wk == nil {
 			break
 		}
-		result, err := wk.client.RecognizeCaptcha(base64Image)
+		result, err := wk.recognizer.RecognizeCaptcha(base64Image)
 		if err == nil && result != "" {
 			if m.onUsage != nil {
 				m.onUsage(wk.key.ID, true, nil)
