@@ -79,6 +79,15 @@ type Job struct {
 	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
 
+// ProcessedArticle 已处理的RSS文章记录
+type ProcessedArticle struct {
+	ID          string    `json:"id" db:"id"`
+	Title       string    `json:"title" db:"title"`
+	Link        string    `json:"link" db:"link"`
+	CodesJSON   *string   `json:"codes_json,omitempty" db:"codes_json"`
+	ProcessedAt time.Time `json:"processed_at" db:"processed_at"`
+}
+
 // JobPayload 任务载荷结构
 type JobPayload struct {
 	RedeemCodeID  int   `json:"redeem_code_id"`

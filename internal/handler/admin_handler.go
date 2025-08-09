@@ -296,5 +296,28 @@ func (h *AdminHandler) RegisterRoutes(router *gin.RouterGroup, authMiddleware gi
 			go h.adminService.CronService.RefreshAllAccounts()
 			SuccessResponseWithMessage(c, "已触发刷新任务", nil)
 		})
+
+		// 手动触发RSS抓取（需要管理员权限）
+		admin.POST("/rss/fetch", authMiddleware, func(c *gin.Context) {
+			go h.adminService.CronService.FetchAndProcessRSS()
+			SuccessResponseWithMessage(c, "已触发RSS抓取任务", nil)
+		})
+
+		// 获取最近已处理文章（只读面板数据，默认50条）
+		admin.GET("/rss/processed", authMiddleware, func(c *gin.Context) {
+			// 若未提供limit或<=0，则返回全部
+			limit := 0
+			if v := c.Query("limit"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil {
+					limit = n
+				}
+			}
+			list, err := h.adminService.CronService.ListProcessedArticles(limit)
+			if err != nil {
+				ErrorResponse(c, http.StatusInternalServerError, false, "获取已处理文章失败")
+				return
+			}
+			SuccessResponse(c, list)
+		})
 	}
 }

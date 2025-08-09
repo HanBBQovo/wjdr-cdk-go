@@ -196,11 +196,14 @@ func main() {
 		logRepo,
 		accountRepo,
 		accountService,
+		redeemService,
+		repository.NewRSSRepository(db.GetDB(), logger),
 		ocrKeySvc,
 		automationSvc,
 		workerManager,
 		logger,
 		reloadFunc,
+		cfg.RSS.FeedURL,
 	)
 	// 初始化Admin服务（依赖cronService）
 	adminService := service.NewAdminService(adminRepo, accountService, cronService, logger)

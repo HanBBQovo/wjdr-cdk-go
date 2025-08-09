@@ -12,6 +12,7 @@ type Config struct {
 	Database DatabaseConfig `mapstructure:"database"`
 	OCR      OCRConfig      `mapstructure:"ocr"`
 	Worker   WorkerConfig   `mapstructure:"worker"`
+	RSS      RSSConfig      `mapstructure:"rss"`
 }
 
 type ServerConfig struct {
@@ -40,6 +41,10 @@ type WorkerConfig struct {
 	RateLimitQPS int `mapstructure:"rate_limit_qps"`
 }
 
+type RSSConfig struct {
+	FeedURL string `mapstructure:"feed_url"`
+}
+
 func Load() *Config {
 	viper.SetConfigName(".env")
 	viper.SetConfigType("env")
@@ -61,6 +66,7 @@ func Load() *Config {
 	viper.SetDefault("DB_MAX_IDLE_CONNS", 20)
 	viper.SetDefault("WORKER_CONCURRENCY", 16)
 	viper.SetDefault("RATE_LIMIT_QPS", 8)
+	viper.SetDefault("RSS_FEED_URL", "https://werss.hanbbq.qzz.io/feeds/MP_WXS_3900674781.atom&page=1?limit=5")
 
 	if err := viper.ReadInConfig(); err != nil {
 		log.Printf("配置文件读取失败，使用环境变量: %v", err)
@@ -86,6 +92,8 @@ func Load() *Config {
 
 	config.Worker.Concurrency = viper.GetInt("WORKER_CONCURRENCY")
 	config.Worker.RateLimitQPS = viper.GetInt("RATE_LIMIT_QPS")
+
+	config.RSS.FeedURL = viper.GetString("RSS_FEED_URL")
 
 	return &config
 }

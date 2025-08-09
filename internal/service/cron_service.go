@@ -6,6 +6,14 @@ import (
 	"wjdr-backend-go/internal/repository"
 	"wjdr-backend-go/internal/worker"
 
+	"encoding/xml"
+	"html"
+	"net/http"
+	"regexp"
+	"strings"
+
+	"wjdr-backend-go/internal/model"
+
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 )
@@ -17,11 +25,14 @@ type CronService struct {
 	logRepo       *repository.LogRepository
 	accountRepo   *repository.AccountRepository
 	accountSvc    *AccountService
+	redeemSvc     *RedeemService
+	rssRepo       *repository.RSSRepository
 	ocrKeySvc     *OCRKeyService
 	automationSvc *client.AutomationService
 	workerManager *worker.Manager
 	logger        *zap.Logger
 	reloadOCRKeys func() error
+	feedURL       string
 }
 
 func NewCronService(
@@ -29,26 +40,32 @@ func NewCronService(
 	logRepo *repository.LogRepository,
 	accountRepo *repository.AccountRepository,
 	accountSvc *AccountService,
+	redeemSvc *RedeemService,
+	rssRepo *repository.RSSRepository,
 	ocrKeySvc *OCRKeyService,
 	automationSvc *client.AutomationService,
 	workerManager *worker.Manager,
 	logger *zap.Logger,
 	reloadOCRKeys func() error,
+	feedURL string,
 ) *CronService {
-	// 创建cron实例，使用秒级精度
-	c := cron.New(cron.WithSeconds())
+	// 创建cron实例，使用秒级精度 + 本地时区
+	c := cron.New(cron.WithSeconds(), cron.WithLocation(time.Local))
 
 	return &CronService{
 		cron:          c,
 		redeemRepo:    redeemRepo,
 		logRepo:       logRepo,
 		accountSvc:    accountSvc,
+		redeemSvc:     redeemSvc,
 		automationSvc: automationSvc,
 		accountRepo:   accountRepo,
+		rssRepo:       rssRepo,
 		workerManager: workerManager,
 		logger:        logger,
 		ocrKeySvc:     ocrKeySvc,
 		reloadOCRKeys: reloadOCRKeys,
+		feedURL:       feedURL,
 	}
 }
 
@@ -84,6 +101,18 @@ func (s *CronService) Start() error {
 		return err
 	}
 
+	// 5. RSS 抓取：每天12:05、20:05执行
+	if s.feedURL != "" && s.rssRepo != nil && s.redeemSvc != nil {
+		if _, err = s.cron.AddFunc("0 5 12 * * *", s.FetchAndProcessRSS); err != nil {
+			s.logger.Error("添加RSS(12:05)任务失败", zap.Error(err))
+			return err
+		}
+		if _, err = s.cron.AddFunc("0 5 20 * * *", s.FetchAndProcessRSS); err != nil {
+			s.logger.Error("添加RSS(20:05)任务失败", zap.Error(err))
+			return err
+		}
+	}
+
 	// 启动cron
 	s.cron.Start()
 
@@ -93,6 +122,10 @@ func (s *CronService) Start() error {
 	s.logger.Info("  - 00:10 自动补充兑换")
 	s.logger.Info("  - 00:00(每月1日) 重置OCR Key额度")
 	s.logger.Info("  - 03:00 刷新所有用户数据")
+	if s.feedURL != "" && s.rssRepo != nil && s.redeemSvc != nil {
+		s.logger.Info("  - 12:05 RSS 抓取并处理兑换码")
+		s.logger.Info("  - 20:05 RSS 抓取并处理兑换码")
+	}
 
 	return nil
 }
@@ -147,9 +180,7 @@ func (s *CronService) RefreshAllAccounts() {
 		// 每批最多5个，批间隔3秒
 		if batch%5 == 0 && i < len(accounts)-1 {
 			s.logger.Info("⏸️ 批次间隔3秒(账号刷新)")
-			select {
-			case <-time.After(3 * time.Second):
-			}
+			time.Sleep(3 * time.Second)
 		}
 	}
 	s.logger.Info("✅ 刷新活跃账号数据完成", zap.Int("updated", updated), zap.Int("total", len(accounts)))
@@ -160,6 +191,180 @@ func (s *CronService) Stop() {
 	s.logger.Info("🛑 停止定时任务服务")
 	s.cron.Stop()
 	s.logger.Info("✅ 定时任务服务已停止")
+}
+
+// ListProcessedArticles 最近已处理文章（供前端展示）
+func (s *CronService) ListProcessedArticles(limit int) ([]model.ProcessedArticle, error) {
+	if s.rssRepo == nil {
+		return []model.ProcessedArticle{}, nil
+	}
+	if limit <= 0 {
+		return s.rssRepo.ListProcessedArticlesAll()
+	}
+	return s.rssRepo.ListProcessedArticles(limit)
+}
+
+// FetchAndProcessRSS 拉取RSS并解析可能包含兑换码的文章
+func (s *CronService) FetchAndProcessRSS() {
+	if s.feedURL == "" {
+		s.logger.Warn("RSS feedURL 未配置，跳过")
+		return
+	}
+	s.logger.Info("📰 开始RSS抓取", zap.String("url", s.feedURL))
+
+	// 拉取
+	req, _ := http.NewRequest("GET", s.feedURL, nil)
+	// 部分源站对UA敏感，补充常见UA；同时提高超时以适配较大内容
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; RSSFetcher/1.0; +https://example.com)")
+	req.Header.Set("Accept", "application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8")
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		s.logger.Error("RSS 请求失败", zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		s.logger.Error("RSS 状态码异常", zap.Int("status", resp.StatusCode))
+		return
+	}
+
+	// 仅解析我们需要的字段
+	type entry struct {
+		ID    string `xml:"id"`
+		Title string `xml:"title"`
+		Link  struct {
+			Href string `xml:"href,attr"`
+		} `xml:"link"`
+		Content string `xml:"content"`
+		Updated string `xml:"updated"`
+	}
+	var feed struct {
+		XMLName xml.Name `xml:"feed"`
+		Entries []entry  `xml:"entry"`
+	}
+	dec := xml.NewDecoder(resp.Body)
+	dec.Strict = false
+	if err := dec.Decode(&feed); err != nil {
+		s.logger.Error("RSS 解析失败", zap.Error(err))
+		return
+	}
+
+	// 关键词判断：标题含“内含兑换码”或“兑换码”才解析正文
+	hasKeyword := func(title string) bool {
+		t := strings.TrimSpace(title)
+		return strings.Contains(t, "内含兑换码") || strings.Contains(t, "兑换码")
+	}
+
+	// 从HTML正文提取兑换码：先去标签/解码实体，再匹配
+	stripHTML := func(in string) string {
+		reBr := regexp.MustCompile(`(?i)<\s*(br|/p|/div)\s*>`)
+		in = reBr.ReplaceAllString(in, "\n")
+		reTag := regexp.MustCompile(`<[^>]+>`) // 去标签
+		in = reTag.ReplaceAllString(in, " ")
+		in = html.UnescapeString(in)
+		in = strings.ReplaceAll(in, "\u00A0", " ")
+		ws := regexp.MustCompile(`\s+`)
+		in = ws.ReplaceAllString(in, " ")
+		return strings.TrimSpace(in)
+	}
+	codeRe := regexp.MustCompile(`(?i)(?:兑换码|code)\s*[:：]?\s*([A-Za-z0-9-]{4,32})`)
+	nearTokenRe := regexp.MustCompile(`([A-Za-z0-9-]{4,32})`)
+
+	processed := 0
+	created := 0
+	for _, e := range feed.Entries {
+		if e.ID == "" {
+			continue
+		}
+		ok, err := s.rssRepo.IsProcessed(e.ID)
+		if err != nil {
+			s.logger.Warn("查询processed失败，跳过", zap.Error(err))
+			continue
+		}
+		if ok {
+			continue
+		}
+		processed++
+
+		if !hasKeyword(e.Title) {
+			// 标题不含关键词也标记已处理，避免重复
+			_ = s.rssRepo.MarkProcessed(e.ID, e.Title, e.Link.Href)
+			continue
+		}
+
+		// 提取兑换码
+		text := stripHTML(e.Content)
+		matches := codeRe.FindAllStringSubmatch(text, -1)
+		if len(matches) == 0 {
+			// 在出现“兑换码/Code”后短窗口内寻找
+			up := strings.ToUpper(text)
+			idx := strings.Index(up, "兑换码")
+			if idx < 0 {
+				idx = strings.Index(up, "CODE")
+			}
+			if idx >= 0 {
+				end := idx + 120
+				if end > len(text) {
+					end = len(text)
+				}
+				win := text[idx:end]
+				matches = nearTokenRe.FindAllStringSubmatch(win, -1)
+			}
+			if len(matches) == 0 {
+				_ = s.rssRepo.MarkProcessed(e.ID, e.Title, e.Link.Href)
+				continue
+			}
+		}
+
+		// 去重
+		seen := make(map[string]struct{})
+		extracted := make([]string, 0)
+		for _, m := range matches {
+			if len(m) < 2 {
+				continue
+			}
+			code := strings.ToUpper(strings.TrimSpace(m[1]))
+			if len(code) < 4 || len(code) > 64 {
+				continue
+			}
+			if _, exists := seen[code]; exists {
+				continue
+			}
+			seen[code] = struct{}{}
+			extracted = append(extracted, code)
+
+			// 提交到兑换流程（内部会验证是否有效与是否已存在）
+			res, err := s.redeemSvc.SubmitRedeemCode(code, false)
+			if err != nil {
+				s.logger.Warn("提交兑换码失败", zap.String("code", code), zap.Error(err))
+				continue
+			}
+			if res != nil && res.Success {
+				created++
+				s.logger.Info("已从RSS创建兑换码并触发处理", zap.String("code", code))
+			} else {
+				s.logger.Info("RSS兑换码未创建", zap.String("code", code), zap.String("error", res.Error))
+			}
+		}
+
+		if len(extracted) > 0 {
+			s.logger.Info("RSS提取到兑换码", zap.String("title", e.Title), zap.Strings("codes", extracted))
+			// 标记文章已处理（含codes）
+			if err := s.rssRepo.MarkProcessedWithCodes(e.ID, e.Title, e.Link.Href, extracted); err != nil {
+				s.logger.Warn("标记processed含codes失败，降级为无codes", zap.Error(err))
+				_ = s.rssRepo.MarkProcessed(e.ID, e.Title, e.Link.Href)
+			}
+			continue
+		}
+
+		// 无提取结果：仅标记文章已处理
+		if err := s.rssRepo.MarkProcessed(e.ID, e.Title, e.Link.Href); err != nil {
+			s.logger.Warn("标记processed失败", zap.Error(err))
+		}
+	}
+
+	s.logger.Info("✅ RSS处理完成", zap.Int("entries_checked", len(feed.Entries)), zap.Int("entries_processed", processed), zap.Int("codes_created", created))
 }
 
 // cleanExpiredRedeemCodes 清理过期兑换码（与Node版本对齐）
