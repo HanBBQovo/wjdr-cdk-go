@@ -131,10 +131,13 @@ func (r *LogRepository) ReplaceRedeemLog(
 // GetLogsByRedeemCodeID 获取兑换码的所有日志（与Node版本对齐）
 func (r *LogRepository) GetLogsByRedeemCodeID(redeemCodeID int) ([]model.RedeemLog, error) {
 	query := `
-		SELECT * FROM redeem_logs 
-		WHERE redeem_code_id = ? 
-		ORDER BY redeemed_at DESC
-	`
+        SELECT rl.id, rl.redeem_code_id, rl.game_account_id, rl.fid, ga.nickname, rl.code, rl.result,
+               rl.error_message, rl.success_message, rl.captcha_recognized, rl.processing_time, rl.err_code, rl.redeemed_at
+        FROM redeem_logs rl
+        LEFT JOIN game_accounts ga ON ga.id = rl.game_account_id
+        WHERE rl.redeem_code_id = ? 
+        ORDER BY rl.redeemed_at DESC
+    `
 
 	rows, err := r.db.Query(query, redeemCodeID)
 	if err != nil {
@@ -151,6 +154,7 @@ func (r *LogRepository) GetLogsByRedeemCodeID(redeemCodeID int) ([]model.RedeemL
 			&log.RedeemCodeID,
 			&log.GameAccountID,
 			&log.FID,
+			&log.Nickname,
 			&log.Code,
 			&log.Result,
 			&log.ErrorMessage,
@@ -173,10 +177,13 @@ func (r *LogRepository) GetLogsByRedeemCodeID(redeemCodeID int) ([]model.RedeemL
 // GetLogsByAccountID 获取账号的兑换历史（与Node版本对齐）
 func (r *LogRepository) GetLogsByAccountID(accountID int) ([]model.RedeemLog, error) {
 	query := `
-		SELECT * FROM redeem_logs 
-		WHERE game_account_id = ? 
-		ORDER BY redeemed_at DESC
-	`
+        SELECT rl.id, rl.redeem_code_id, rl.game_account_id, rl.fid, ga.nickname, rl.code, rl.result,
+               rl.error_message, rl.success_message, rl.captcha_recognized, rl.processing_time, rl.err_code, rl.redeemed_at
+        FROM redeem_logs rl
+        LEFT JOIN game_accounts ga ON ga.id = rl.game_account_id
+        WHERE rl.game_account_id = ? 
+        ORDER BY rl.redeemed_at DESC
+    `
 
 	rows, err := r.db.Query(query, accountID)
 	if err != nil {
@@ -193,6 +200,7 @@ func (r *LogRepository) GetLogsByAccountID(accountID int) ([]model.RedeemLog, er
 			&log.RedeemCodeID,
 			&log.GameAccountID,
 			&log.FID,
+			&log.Nickname,
 			&log.Code,
 			&log.Result,
 			&log.ErrorMessage,
@@ -214,9 +222,12 @@ func (r *LogRepository) GetLogsByAccountID(accountID int) ([]model.RedeemLog, er
 
 // GetRecentLogs 获取最近的兑换记录（与Node版本对齐）
 func (r *LogRepository) GetRecentLogs(limit int) ([]model.RedeemLog, error) {
-	query := `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message, 
-	          captcha_recognized, processing_time, err_code, redeemed_at 
-	          FROM redeem_logs ORDER BY redeemed_at DESC LIMIT ?`
+	query := `
+        SELECT rl.id, rl.redeem_code_id, rl.game_account_id, rl.fid, ga.nickname, rl.code, rl.result,
+               rl.error_message, rl.success_message, rl.captcha_recognized, rl.processing_time, rl.err_code, rl.redeemed_at
+        FROM redeem_logs rl
+        LEFT JOIN game_accounts ga ON ga.id = rl.game_account_id
+        ORDER BY rl.redeemed_at DESC LIMIT ?`
 
 	rows, err := r.db.Query(query, limit)
 	if err != nil {
@@ -233,6 +244,7 @@ func (r *LogRepository) GetRecentLogs(limit int) ([]model.RedeemLog, error) {
 			&log.RedeemCodeID,
 			&log.GameAccountID,
 			&log.FID,
+			&log.Nickname,
 			&log.Code,
 			&log.Result,
 			&log.ErrorMessage,
@@ -306,9 +318,12 @@ func (r *LogRepository) GetRecentLogsFiltered(limit int, result string) ([]model
 
 // GetAllLogs 获取全部兑换记录（去除分页）
 func (r *LogRepository) GetAllLogs() ([]model.RedeemLog, error) {
-	query := `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message,
-              captcha_recognized, processing_time, err_code, redeemed_at
-              FROM redeem_logs ORDER BY redeemed_at DESC`
+	query := `
+        SELECT rl.id, rl.redeem_code_id, rl.game_account_id, rl.fid, ga.nickname, rl.code, rl.result,
+               rl.error_message, rl.success_message, rl.captcha_recognized, rl.processing_time, rl.err_code, rl.redeemed_at
+        FROM redeem_logs rl
+        LEFT JOIN game_accounts ga ON ga.id = rl.game_account_id
+        ORDER BY rl.redeemed_at DESC`
 
 	rows, err := r.db.Query(query)
 	if err != nil {
@@ -325,6 +340,7 @@ func (r *LogRepository) GetAllLogs() ([]model.RedeemLog, error) {
 			&log.RedeemCodeID,
 			&log.GameAccountID,
 			&log.FID,
+			&log.Nickname,
 			&log.Code,
 			&log.Result,
 			&log.ErrorMessage,
@@ -352,14 +368,20 @@ func (r *LogRepository) GetAllLogsFiltered(result string) ([]model.RedeemLog, er
 	)
 
 	if result == "" {
-		query = `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message,
-                 captcha_recognized, processing_time, err_code, redeemed_at
-                 FROM redeem_logs ORDER BY redeemed_at DESC`
+		query = `
+            SELECT rl.id, rl.redeem_code_id, rl.game_account_id, rl.fid, ga.nickname, rl.code, rl.result,
+                   rl.error_message, rl.success_message, rl.captcha_recognized, rl.processing_time, rl.err_code, rl.redeemed_at
+            FROM redeem_logs rl
+            LEFT JOIN game_accounts ga ON ga.id = rl.game_account_id
+            ORDER BY rl.redeemed_at DESC`
 		rows, err = r.db.Query(query)
 	} else {
-		query = `SELECT id, redeem_code_id, game_account_id, fid, code, result, error_message, success_message,
-                 captcha_recognized, processing_time, err_code, redeemed_at
-                 FROM redeem_logs WHERE result = ? ORDER BY redeemed_at DESC`
+		query = `
+            SELECT rl.id, rl.redeem_code_id, rl.game_account_id, rl.fid, ga.nickname, rl.code, rl.result,
+                   rl.error_message, rl.success_message, rl.captcha_recognized, rl.processing_time, rl.err_code, rl.redeemed_at
+            FROM redeem_logs rl
+            LEFT JOIN game_accounts ga ON ga.id = rl.game_account_id
+            WHERE rl.result = ? ORDER BY rl.redeemed_at DESC`
 		rows, err = r.db.Query(query, result)
 	}
 	if err != nil {
@@ -376,6 +398,7 @@ func (r *LogRepository) GetAllLogsFiltered(result string) ([]model.RedeemLog, er
 			&log.RedeemCodeID,
 			&log.GameAccountID,
 			&log.FID,
+			&log.Nickname,
 			&log.Code,
 			&log.Result,
 			&log.ErrorMessage,

@@ -289,5 +289,12 @@ func (h *AdminHandler) RegisterRoutes(router *gin.RouterGroup, authMiddleware gi
 				SuccessResponseWithMessage(c, result.Message, result.Data)
 			})
 		}
+
+		// 刷新所有活跃账号（需要管理员权限）
+		admin.POST("/accounts/refresh", authMiddleware, func(c *gin.Context) {
+			// 立即触发刷新（批次：每批5个，间隔3s）
+			go h.adminService.CronService.RefreshAllAccounts()
+			SuccessResponseWithMessage(c, "已触发刷新任务", nil)
+		})
 	}
 }

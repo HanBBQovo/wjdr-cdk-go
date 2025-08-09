@@ -39,8 +39,9 @@ func NewManager(
 	jobQueue := NewJobQueue(config.QueueCapacity, jobRepo, logger)
 
 	// 创建Worker池配置
+	// 强制串行，确保任意时刻仅一个账号执行兑换（与队列逻辑保持一致）
 	workerConfig := WorkerPoolConfig{
-		Concurrency:  config.Concurrency,
+		Concurrency:  1,
 		RateLimitQPS: config.RateLimitQPS,
 	}
 

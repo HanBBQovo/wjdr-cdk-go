@@ -15,6 +15,7 @@ import (
 type AdminService struct {
 	adminRepo      *repository.AdminRepository
 	AccountService *AccountService
+	CronService    *CronService
 	logger         *zap.Logger
 }
 
@@ -24,11 +25,13 @@ const TokenExpireTime = 30 * 24 * time.Hour
 func NewAdminService(
 	adminRepo *repository.AdminRepository,
 	accountSvc *AccountService,
+	cronSvc *CronService,
 	logger *zap.Logger,
 ) *AdminService {
 	return &AdminService{
 		adminRepo:      adminRepo,
 		AccountService: accountSvc,
+		CronService:    cronSvc,
 		logger:         logger,
 	}
 }

@@ -42,6 +42,16 @@ type OCRRecognizeResponse struct {
 	ErrorMsg  string `json:"error_msg,omitempty"`
 }
 
+// OCRError 带错误码的错误类型（用于上层判断额度用尽等场景）
+type OCRError struct {
+	Code int
+	Msg  string
+}
+
+func (e *OCRError) Error() string {
+	return fmt.Sprintf("[%d] %s", e.Code, e.Msg)
+}
+
 func NewOCRClient(apiKey, secretKey string, logger *zap.Logger) *OCRClient {
 	return &OCRClient{
 		apiKey:    apiKey,
@@ -159,7 +169,7 @@ func (c *OCRClient) recognizeGeneral(base64Image string) (string, error) {
 		c.logger.Error("❌ 百度OCR标准版识别失败",
 			zap.Int("error_code", result.ErrorCode),
 			zap.String("error_msg", result.ErrorMsg))
-		return "", fmt.Errorf("[%d] %s", result.ErrorCode, result.ErrorMsg)
+		return "", &OCRError{Code: result.ErrorCode, Msg: result.ErrorMsg}
 	}
 
 	if len(result.WordsResult) > 0 {
@@ -238,7 +248,7 @@ func (c *OCRClient) recognizeAccurate(base64Image string) (string, error) {
 		c.logger.Error("❌ 百度高精度OCR识别失败",
 			zap.Int("error_code", result.ErrorCode),
 			zap.String("error_msg", result.ErrorMsg))
-		return "", fmt.Errorf("[%d] %s", result.ErrorCode, result.ErrorMsg)
+		return "", &OCRError{Code: result.ErrorCode, Msg: result.ErrorMsg}
 	}
 
 	if len(result.WordsResult) > 0 {

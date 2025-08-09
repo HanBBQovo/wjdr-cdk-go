@@ -23,6 +23,7 @@ coverage/
 *.prof
 *.pprof
 *.log
+logs/
 
 # Env files
 .env
@@ -39,3 +40,6 @@ go.work.sum
 
 # Caches
 **/.cache/
+
+update.sh
+scripts

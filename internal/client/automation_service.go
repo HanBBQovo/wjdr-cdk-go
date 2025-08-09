@@ -11,7 +11,7 @@ import (
 // AutomationService 游戏自动化服务（复刻Node版本的完整兑换流程）
 type AutomationService struct {
 	gameClient *GameClient
-	ocrClient  *OCRClient
+	ocr        OCRRecognizer
 	logger     *zap.Logger
 }
 
@@ -45,10 +45,10 @@ type RedeemResult struct {
 	Reward            string `json:"reward,omitempty"`
 }
 
-func NewAutomationService(gameClient *GameClient, ocrClient *OCRClient, logger *zap.Logger) *AutomationService {
+func NewAutomationService(gameClient *GameClient, ocr OCRRecognizer, logger *zap.Logger) *AutomationService {
 	return &AutomationService{
 		gameClient: gameClient,
-		ocrClient:  ocrClient,
+		ocr:        ocr,
 		logger:     logger,
 	}
 }
@@ -91,7 +91,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 			GiftCode:       giftCode,
 			Error:          fmt.Sprintf("登录请求异常: %v", err),
 			Stage:          "login_exception",
-			ProcessingTime: int(time.Since(startTime).Seconds()),
+			ProcessingTime: int(time.Since(startTime).Milliseconds()),
 		}, nil
 	}
 
@@ -103,7 +103,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 			Error:          fmt.Sprintf("登录失败: %s", loginResult.Error),
 			Stage:          "login",
 			ErrCode:        loginResult.ErrCode,
-			ProcessingTime: int(time.Since(startTime).Seconds()),
+			ProcessingTime: int(time.Since(startTime).Milliseconds()),
 		}, nil
 	}
 
@@ -131,7 +131,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 					GiftCode:       giftCode,
 					Error:          lastError,
 					Stage:          "captcha_exception",
-					ProcessingTime: int(time.Since(startTime).Seconds()),
+					ProcessingTime: int(time.Since(startTime).Milliseconds()),
 					Attempts:       attempt,
 				}, nil
 			}
@@ -158,7 +158,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 						Error:          lastError,
 						Stage:          "relogin",
 						ErrCode:        reLoginResult.ErrCode,
-						ProcessingTime: int(time.Since(startTime).Seconds()),
+						ProcessingTime: int(time.Since(startTime).Milliseconds()),
 						Attempts:       attempt,
 					}, nil
 				}
@@ -185,7 +185,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 						GiftCode:       giftCode,
 						Error:          fmt.Sprintf("重新登录请求异常: %v", err),
 						Stage:          "relogin_exception",
-						ProcessingTime: int(time.Since(startTime).Seconds()),
+						ProcessingTime: int(time.Since(startTime).Milliseconds()),
 					}, nil
 				}
 
@@ -198,7 +198,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 						time.Sleep(60 * time.Second)
 						reLoginResult2, loginErr2 := s.gameClient.Login(fid)
 						if loginErr2 != nil || !reLoginResult2.Success {
-							return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: "重新登录失败(兜底)", Stage: "relogin", ProcessingTime: int(time.Since(startTime).Seconds())}, nil
+							return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: "重新登录失败(兜底)", Stage: "relogin", ProcessingTime: int(time.Since(startTime).Milliseconds())}, nil
 						}
 						continue
 					}
@@ -228,7 +228,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 						GiftCode:       giftCode,
 						Error:          fmt.Sprintf("冷却后重新登录请求异常: %v", err),
 						Stage:          "relogin_exception",
-						ProcessingTime: int(time.Since(startTime).Seconds()),
+						ProcessingTime: int(time.Since(startTime).Milliseconds()),
 					}, nil
 				}
 				if !reLoginResult.Success {
@@ -242,7 +242,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 							Error:          lastError,
 							Stage:          "relogin",
 							ErrCode:        reLoginResult.ErrCode,
-							ProcessingTime: int(time.Since(startTime).Seconds()),
+							ProcessingTime: int(time.Since(startTime).Milliseconds()),
 							Attempts:       attempt,
 						}, nil
 					}
@@ -263,7 +263,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 					Error:          lastError,
 					Stage:          "captcha",
 					ErrCode:        captchaResult.ErrCode,
-					ProcessingTime: int(time.Since(startTime).Seconds()),
+					ProcessingTime: int(time.Since(startTime).Milliseconds()),
 					Attempts:       attempt,
 				}, nil
 			}
@@ -276,7 +276,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 		captchaData := captchaResult.Data.(map[string]interface{})
 		captchaImg := captchaData["img"].(string)
 
-		captchaValue, err := s.ocrClient.RecognizeCaptcha(captchaImg)
+		captchaValue, err := s.ocr.RecognizeCaptcha(captchaImg)
 		if err != nil || captchaValue == "" {
 			lastError = "验证码识别失败或长度异常"
 			if attempt == maxRetries {
@@ -285,10 +285,10 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 				time.Sleep(60 * time.Second)
 				reLoginResult, loginErr := s.gameClient.Login(fid)
 				if loginErr != nil {
-					return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: fmt.Sprintf("冷却后重新登录请求异常: %v", loginErr), Stage: "relogin_exception", ProcessingTime: int(time.Since(startTime).Seconds())}, nil
+					return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: fmt.Sprintf("冷却后重新登录请求异常: %v", loginErr), Stage: "relogin_exception", ProcessingTime: int(time.Since(startTime).Milliseconds())}, nil
 				}
 				if !reLoginResult.Success {
-					return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: fmt.Sprintf("冷却后重新登录失败: %s", reLoginResult.Error), Stage: "relogin", ErrCode: reLoginResult.ErrCode, ProcessingTime: int(time.Since(startTime).Seconds())}, nil
+					return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: fmt.Sprintf("冷却后重新登录失败: %s", reLoginResult.Error), Stage: "relogin", ErrCode: reLoginResult.ErrCode, ProcessingTime: int(time.Since(startTime).Milliseconds())}, nil
 				}
 				// 冷却后再获取一次验证码，若仍失败将由下一轮逻辑兜底
 				continue
@@ -321,10 +321,10 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 				time.Sleep(60 * time.Second)
 				reLoginResult, loginErr := s.gameClient.Login(fid)
 				if loginErr != nil {
-					return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: fmt.Sprintf("冷却后重新登录请求异常: %v", loginErr), Stage: "relogin_exception", ProcessingTime: int(time.Since(startTime).Seconds())}, nil
+					return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: fmt.Sprintf("冷却后重新登录请求异常: %v", loginErr), Stage: "relogin_exception", ProcessingTime: int(time.Since(startTime).Milliseconds())}, nil
 				}
 				if !reLoginResult.Success {
-					return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: fmt.Sprintf("冷却后重新登录失败: %s", reLoginResult.Error), Stage: "relogin", ErrCode: reLoginResult.ErrCode, ProcessingTime: int(time.Since(startTime).Seconds())}, nil
+					return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: fmt.Sprintf("冷却后重新登录失败: %s", reLoginResult.Error), Stage: "relogin", ErrCode: reLoginResult.ErrCode, ProcessingTime: int(time.Since(startTime).Milliseconds())}, nil
 				}
 				// 冷却后再获取一次验证码，若仍失败将由下一轮逻辑兜底
 				continue
@@ -349,7 +349,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 					GiftCode:          giftCode,
 					CaptchaRecognized: captchaValue,
 					Error:             lastError,
-					ProcessingTime:    int(time.Since(startTime).Seconds()),
+					ProcessingTime:    int(time.Since(startTime).Milliseconds()),
 					Stage:             "redeem_exception",
 					Attempts:          attempt,
 				}, nil
@@ -370,7 +370,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 					GiftCode:          giftCode,
 					CaptchaRecognized: captchaValue,
 					Error:             fmt.Sprintf("冷却后重新登录请求异常: %v", loginErr),
-					ProcessingTime:    int(time.Since(startTime).Seconds()),
+					ProcessingTime:    int(time.Since(startTime).Milliseconds()),
 					Stage:             "relogin_exception",
 				}, nil
 			}
@@ -384,7 +384,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 						GiftCode:          giftCode,
 						CaptchaRecognized: captchaValue,
 						Error:             lastError,
-						ProcessingTime:    int(time.Since(startTime).Seconds()),
+						ProcessingTime:    int(time.Since(startTime).Milliseconds()),
 						Stage:             "relogin",
 						ErrCode:           reLoginResult.ErrCode,
 						Attempts:          attempt,
@@ -399,7 +399,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 
 		if redeemResult.Success {
 			// 兑换成功
-			processingTime := int(time.Since(startTime).Seconds())
+			processingTime := int(time.Since(startTime).Milliseconds())
 			s.logger.Debug("✅ 兑换成功！", zap.Int("attempt", attempt))
 
 			redeemData := redeemResult.Data.(map[string]interface{})
@@ -426,7 +426,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 			// 检查是否为致命错误（不需要重试）
 			if redeemResult.IsFatal {
 				s.logger.Info("💀 遇到致命错误，停止重试", zap.String("error", redeemResult.Error))
-				processingTime := int(time.Since(startTime).Seconds())
+				processingTime := int(time.Since(startTime).Milliseconds())
 				return &RedeemResult{
 					Success:           false,
 					FID:               fid,
@@ -487,7 +487,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 						s.logger.Error("❌ 冷却后重新登录失败", zap.String("error", reLoginResult.Error))
 						lastError = fmt.Sprintf("冷却后重新登录失败: %s", reLoginResult.Error)
 						if attempt == maxRetries {
-							processingTime := int(time.Since(startTime).Seconds())
+							processingTime := int(time.Since(startTime).Milliseconds())
 							return &RedeemResult{
 								Success:           false,
 								FID:               fid,
@@ -511,7 +511,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 			} else {
 				// 其他错误，直接返回
 				s.logger.Info("❌ 兑换失败 (非验证码问题)", zap.String("error", redeemResult.Error))
-				processingTime := int(time.Since(startTime).Seconds())
+				processingTime := int(time.Since(startTime).Milliseconds())
 				return &RedeemResult{
 					Success:           false,
 					FID:               fid,
@@ -530,7 +530,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 
 	// 所有重试都失败了
 	s.logger.Info("❌ 所有重试都失败了", zap.Int("max_retries", maxRetries))
-	processingTime := int(time.Since(startTime).Seconds())
+	processingTime := int(time.Since(startTime).Milliseconds())
 	return &RedeemResult{
 		Success:           false,
 		FID:               fid,
@@ -551,6 +551,7 @@ func (s *AutomationService) RedeemBatch(accounts []Account, giftCode string) ([]
 		cooldowns       int // 已发生的60s冷却次数
 		attemptsInCycle int // 自上次冷却以来的非冷却尝试次数（用于3次后触发一次冷却）
 		nextReadyAt     time.Time
+		startedAt       time.Time // 首次开始处理该账号的时间，用于统计包含冷却/等待的总耗时
 		finalized       bool
 	}
 
@@ -617,11 +618,15 @@ func (s *AutomationService) RedeemBatch(accounts []Account, giftCode string) ([]
 		}
 
 		st := states[idx]
+		// 首次处理该账号时记录起始时间（用于累计包含冷却/等待的总历时）
+		if st.startedAt.IsZero() {
+			st.startedAt = time.Now()
+		}
 
 		// 单次尝试（不在内部执行60s睡眠）
-		stepStart := time.Now()
 		stepRes := s.tryOnceNoCooldown(st.acc.FID, giftCode)
-		procSec := int(time.Since(stepStart).Seconds())
+		// 账号总耗时（墙钟时间，包含冷却/等待），单位毫秒
+		wallMs := int(time.Since(st.startedAt).Milliseconds())
 		lastSwitchAt = time.Now()
 
 		// 构造临时结果（仅在最终确定时append）
@@ -631,7 +636,7 @@ func (s *AutomationService) RedeemBatch(accounts []Account, giftCode string) ([]
 			Result:            "failed",
 			Error:             stepRes.Error,
 			CaptchaRecognized: stepRes.CaptchaRecognized,
-			ProcessingTime:    procSec,
+			ProcessingTime:    wallMs,
 			ErrCode:           stepRes.ErrCode,
 			Success:           stepRes.Success,
 		}
@@ -760,7 +765,7 @@ func (s *AutomationService) tryOnceNoCooldown(fid, giftCode string) *RedeemResul
 	// 3. OCR识别
 	captchaData := captchaResult.Data.(map[string]interface{})
 	captchaImg := captchaData["img"].(string)
-	captchaValue, err := s.ocrClient.RecognizeCaptcha(captchaImg)
+	captchaValue, err := s.ocr.RecognizeCaptcha(captchaImg)
 	if err != nil || captchaValue == "" {
 		return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: "验证码识别失败", Stage: "ocr", ErrCode: 40103}
 	}
@@ -789,7 +794,7 @@ func (s *AutomationService) tryOnceNoCooldown(fid, giftCode string) *RedeemResul
 		return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: "兑换请求异常", Stage: "redeem_exception", ErrCode: 40101}
 	}
 	if redeemResult.Success {
-		processingTime := int(time.Since(startTime).Seconds())
+		processingTime := int(time.Since(startTime).Milliseconds())
 		return &RedeemResult{Success: true, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Message: "兑换成功", ProcessingTime: processingTime, Stage: "completed", ErrCode: redeemResult.ErrCode, Attempts: 1}
 	}
 

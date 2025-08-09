@@ -186,14 +186,41 @@ func (s *AccountService) VerifyAccount(id int) (*model.APIResponse, error) {
 		}, err
 	}
 
-	// 更新验证状态
-	err = s.accountRepo.UpdateVerifyStatus(id, loginResult.Success)
-	if err != nil {
-		s.logger.Error("更新验证状态失败", zap.Error(err))
-		return &model.APIResponse{
-			Success: false,
-			Error:   "更新验证状态失败",
-		}, err
+	// 更新验证状态及资料
+	if loginResult.Success {
+		userData := loginResult.Data.(map[string]interface{})
+		nickname := ""
+		if n, ok := userData["nickname"]; ok && n != nil {
+			nickname = n.(string)
+		}
+		var avatarImage *string
+		if a, ok := userData["avatar_image"]; ok && a != nil && a.(string) != "" {
+			v := a.(string)
+			avatarImage = &v
+		}
+		var stoveLv *int
+		if sLv, ok := userData["stove_lv"]; ok && sLv != nil {
+			switch v := sLv.(type) {
+			case int:
+				stoveLv = &v
+			case float64:
+				vv := int(v)
+				stoveLv = &vv
+			}
+		}
+		var stoveLvContent *string
+		if c, ok := userData["stove_lv_content"]; ok && c != nil && c.(string) != "" {
+			vv := c.(string)
+			stoveLvContent = &vv
+		}
+		if err := s.accountRepo.UpdateFromLoginData(id, nickname, avatarImage, stoveLv, stoveLvContent, true); err != nil {
+			return &model.APIResponse{Success: false, Error: "更新账号资料失败"}, err
+		}
+	} else {
+		if err := s.accountRepo.UpdateVerifyStatus(id, false); err != nil {
+			s.logger.Error("更新验证状态失败", zap.Error(err))
+			return &model.APIResponse{Success: false, Error: "更新验证状态失败"}, err
+		}
 	}
 
 	if loginResult.Success {
@@ -258,11 +285,7 @@ func (s *AccountService) DeleteAccount(id int) (*model.APIResponse, error) {
 		}, err
 	}
 
-	// 为避免极端情况下统计未即时刷新，这里再做一次全量统计修复
-	if _, fixErr := s.accountRepo.FixAllRedeemCodeStats(); fixErr != nil {
-		// 不阻断删除流程，仅记录日志
-		s.logger.Warn("删除账号后修复统计失败", zap.Error(fixErr))
-	}
+	// 统计已在仓储层以增量方式更新，无需在服务层进行全量修复
 
 	s.logger.Info("✅ 账号删除成功",
 		zap.Int("id", id),
@@ -284,11 +307,6 @@ func (s *AccountService) BulkDeleteAccounts(ids []int) (*model.APIResponse, erro
 	if err != nil {
 		s.logger.Error("批量删除账号失败", zap.Error(err))
 		return &model.APIResponse{Success: false, Error: "批量删除账号失败"}, err
-	}
-
-	// 删除后做一次统计修复（与单个删除保持一致的最终一致性策略）
-	if _, fixErr := s.accountRepo.FixAllRedeemCodeStats(); fixErr != nil {
-		s.logger.Warn("批量删除账号后修复统计失败", zap.Error(fixErr))
 	}
 
 	return &model.APIResponse{

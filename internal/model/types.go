@@ -36,6 +36,7 @@ type RedeemLog struct {
 	RedeemCodeID      int       `json:"redeem_code_id" db:"redeem_code_id"`
 	GameAccountID     int       `json:"game_account_id" db:"game_account_id"`
 	FID               string    `json:"fid" db:"fid"`
+	Nickname          *string   `json:"nickname,omitempty" db:"nickname"`
 	Code              string    `json:"code" db:"code"`
 	Result            string    `json:"result" db:"result"`
 	ErrorMessage      *string   `json:"error_message" db:"error_message"`
@@ -84,6 +85,26 @@ type JobPayload struct {
 	AccountIDs    []int `json:"account_ids,omitempty"`
 	IsRetry       bool  `json:"is_retry,omitempty"`
 	SkipAccountID *int  `json:"skip_account_id,omitempty"`
+}
+
+// OCRKey OCR Key 管理模型
+type OCRKey struct {
+	ID             int        `json:"id" db:"id"`
+	Provider       string     `json:"provider" db:"provider"`
+	Name           string     `json:"name" db:"name"`
+	APIKey         string     `json:"api_key" db:"api_key"`
+	SecretKey      string     `json:"secret_key" db:"secret_key"`
+	IsActive       bool       `json:"is_active" db:"is_active"`
+	HasQuota       bool       `json:"has_quota" db:"has_quota"`
+	MonthlyQuota   int        `json:"monthly_quota" db:"monthly_quota"`
+	RemainingQuota int        `json:"remaining_quota" db:"remaining_quota"`
+	Weight         int        `json:"weight" db:"weight"`
+	SuccessCount   int        `json:"success_count" db:"success_count"`
+	FailCount      int        `json:"fail_count" db:"fail_count"`
+	LastError      *string    `json:"last_error,omitempty" db:"last_error"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty" db:"last_used_at"`
+	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
 }
 
 // API响应结构

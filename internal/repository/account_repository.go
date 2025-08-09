@@ -166,6 +166,36 @@ func (r *AccountRepository) UpdateVerifyStatus(id int, success bool) error {
 	return nil
 }
 
+// UpdateFromLoginData 根据登录结果更新账号的资料与验证状态
+func (r *AccountRepository) UpdateFromLoginData(id int, nickname string, avatarImage *string, stoveLv *int, stoveLvContent *string, isVerified bool) error {
+	query := `UPDATE game_accounts 
+              SET nickname = ?, avatar_image = ?, stove_lv = ?, stove_lv_content = ?, is_verified = ?, last_login_check = NOW()
+              WHERE id = ?`
+	var avatarAny interface{}
+	if avatarImage != nil && *avatarImage != "" {
+		avatarAny = *avatarImage
+	} else {
+		avatarAny = nil
+	}
+	var stoveAny interface{}
+	if stoveLv != nil {
+		stoveAny = *stoveLv
+	} else {
+		stoveAny = nil
+	}
+	var stoveContentAny interface{}
+	if stoveLvContent != nil && *stoveLvContent != "" {
+		stoveContentAny = *stoveLvContent
+	} else {
+		stoveContentAny = nil
+	}
+	if _, err := r.db.Exec(query, nickname, avatarAny, stoveAny, stoveContentAny, isVerified, id); err != nil {
+		r.logger.Error("更新账号登录资料失败", zap.Error(err), zap.Int("id", id))
+		return err
+	}
+	return nil
+}
+
 // Delete 删除账号（与Node版本对齐）
 func (r *AccountRepository) Delete(id int) error {
 	const maxRetries = 3
@@ -190,41 +220,55 @@ func (r *AccountRepository) Delete(id int) error {
 			return err
 		}
 
-		// 读取受影响的兑换码（使用 ORDER BY 确保一致顺序，减少死锁）
-		affectedCodesQuery := `
-            SELECT DISTINCT redeem_code_id 
+		// 聚合读取本账号将影响的各兑换码统计增量（减少全表扫描与多次统计）
+		aggRows, err := tx.Query(`
+            SELECT redeem_code_id, result, COUNT(*) 
             FROM redeem_logs 
-            WHERE game_account_id = ?
-            ORDER BY redeem_code_id ASC`
-		rows, err := tx.Query(affectedCodesQuery, id)
+            WHERE game_account_id = ? 
+            GROUP BY redeem_code_id, result 
+            ORDER BY redeem_code_id ASC`, id)
 		if err != nil {
 			tx.Rollback()
 			if isDeadlock(err) && attempt < maxRetries {
-				r.logger.Warn("删除账号-读取受影响兑换码发生死锁，重试", zap.Int("attempt", attempt))
+				r.logger.Warn("删除账号-读取聚合统计发生死锁，重试", zap.Int("attempt", attempt))
 				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 				continue
 			}
 			return err
 		}
 
-		var affectedRedeemCodes []int
-		for rows.Next() {
-			var redeemCodeID int
-			if err := rows.Scan(&redeemCodeID); err != nil {
-				rows.Close()
+		// 统计每个兑换码需要扣减的 success/failed/total
+		type counters struct{ success, failed, total int }
+		delMap := make(map[int]*counters)
+		for aggRows.Next() {
+			var codeID int
+			var result string
+			var cnt int
+			if err := aggRows.Scan(&codeID, &result, &cnt); err != nil {
+				aggRows.Close()
 				tx.Rollback()
 				if isDeadlock(err) && attempt < maxRetries {
-					r.logger.Warn("删除账号-扫描受影响兑换码发生死锁，重试", zap.Int("attempt", attempt))
+					r.logger.Warn("删除账号-扫描聚合统计发生死锁，重试", zap.Int("attempt", attempt))
 					time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 					continue
 				}
 				return err
 			}
-			affectedRedeemCodes = append(affectedRedeemCodes, redeemCodeID)
+			c, ok := delMap[codeID]
+			if !ok {
+				c = &counters{}
+				delMap[codeID] = c
+			}
+			if result == "success" {
+				c.success += cnt
+			} else if result == "failed" {
+				c.failed += cnt
+			}
+			c.total += cnt
 		}
-		rows.Close()
+		aggRows.Close()
 
-		// 先显式删除该账号的兑换日志，避免依赖外键级联未配置导致统计不变
+		// 删除兑换日志与账号
 		if _, err = tx.Exec(`DELETE FROM redeem_logs WHERE game_account_id = ?`, id); err != nil {
 			tx.Rollback()
 			if isDeadlock(err) && attempt < maxRetries {
@@ -234,8 +278,6 @@ func (r *AccountRepository) Delete(id int) error {
 			}
 			return err
 		}
-
-		// 再删除账号
 		if _, err = tx.Exec(`DELETE FROM game_accounts WHERE id = ?`, id); err != nil {
 			tx.Rollback()
 			if isDeadlock(err) && attempt < maxRetries {
@@ -246,24 +288,23 @@ func (r *AccountRepository) Delete(id int) error {
 			return err
 		}
 
-		// 依次更新统计，若其中出现死锁，回滚并重试整个事务
-		shouldRetry := false
-		for _, redeemCodeID := range affectedRedeemCodes {
-			if err := r.updateRedeemCodeStats(tx, redeemCodeID); err != nil {
-				if isDeadlock(err) && attempt < maxRetries {
-					r.logger.Warn("删除账号-更新统计发生死锁，重试", zap.Int("attempt", attempt), zap.Int("redeem_code_id", redeemCodeID))
-					shouldRetry = true
-					break
-				}
+		// 直接按增量扣减各兑换码统计（使用 GREATEST 防止负值）
+		for codeID, c := range delMap {
+			if _, err := tx.Exec(`
+                UPDATE redeem_codes 
+                SET 
+                    total_accounts = GREATEST(0, total_accounts - ?),
+                    success_count  = GREATEST(0, success_count  - ?),
+                    failed_count   = GREATEST(0, failed_count   - ?)
+                WHERE id = ?`, c.total, c.success, c.failed, codeID); err != nil {
 				tx.Rollback()
+				if isDeadlock(err) && attempt < maxRetries {
+					r.logger.Warn("删除账号-增量更新统计发生死锁，重试", zap.Int("attempt", attempt), zap.Int("redeem_code_id", codeID))
+					time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+					continue
+				}
 				return err
 			}
-		}
-
-		if shouldRetry {
-			tx.Rollback()
-			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
-			continue
 		}
 
 		if err := tx.Commit(); err != nil {
@@ -288,54 +329,130 @@ func (r *AccountRepository) BulkDelete(ids []int) (int, error) {
 		return 0, nil
 	}
 
-	// 事务：删除所有账号对应的redeem_logs，再删除账号，最后批量更新受影响兑换码统计
-	tx, err := r.db.Begin()
-	if err != nil {
-		return 0, err
+	// 与单个删除保持一致：支持死锁重试
+	const maxRetries = 3
+	isDeadlock := func(err error) bool {
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) {
+			return mysqlErr.Number == 1213 || mysqlErr.Number == 1205
+		}
+		if err != nil {
+			msg := strings.ToLower(err.Error())
+			return strings.Contains(msg, "deadlock") || strings.Contains(msg, "lock wait timeout")
+		}
+		return false
 	}
 
-	// 收集受影响兑换码
-	affectedMap := make(map[int]struct{})
+	// 构造 IN 占位符
+	placeholders := make([]string, 0, len(ids))
+	args := make([]interface{}, 0, len(ids))
 	for _, id := range ids {
-		rows, err := tx.Query(`SELECT DISTINCT redeem_code_id FROM redeem_logs WHERE game_account_id = ?`, id)
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	inClause := strings.Join(placeholders, ",")
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		tx, err := r.db.Begin()
+		if err != nil {
+			return 0, err
+		}
+
+		// 聚合读取将要删除的账号在各兑换码上的计数
+		aggQuery := `SELECT redeem_code_id, result, COUNT(*) FROM redeem_logs WHERE game_account_id IN (` + inClause + `) GROUP BY redeem_code_id, result`
+		aggRows, err := tx.Query(aggQuery, args...)
 		if err != nil {
 			tx.Rollback()
+			if isDeadlock(err) && attempt < maxRetries {
+				r.logger.Warn("批量删除-读取聚合统计发生死锁，重试", zap.Int("attempt", attempt))
+				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				continue
+			}
 			return 0, err
 		}
-		for rows.Next() {
+
+		type counters struct{ success, failed, total int }
+		delMap := make(map[int]*counters)
+		for aggRows.Next() {
 			var codeID int
-			if err := rows.Scan(&codeID); err != nil {
-				rows.Close()
+			var result string
+			var cnt int
+			if err := aggRows.Scan(&codeID, &result, &cnt); err != nil {
+				aggRows.Close()
 				tx.Rollback()
+				if isDeadlock(err) && attempt < maxRetries {
+					r.logger.Warn("批量删除-扫描聚合统计发生死锁，重试", zap.Int("attempt", attempt))
+					time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+					continue
+				}
 				return 0, err
 			}
-			affectedMap[codeID] = struct{}{}
+			c, ok := delMap[codeID]
+			if !ok {
+				c = &counters{}
+				delMap[codeID] = c
+			}
+			if result == "success" {
+				c.success += cnt
+			} else if result == "failed" {
+				c.failed += cnt
+			}
+			c.total += cnt
 		}
-		rows.Close()
+		aggRows.Close()
 
-		if _, err := tx.Exec(`DELETE FROM redeem_logs WHERE game_account_id = ?`, id); err != nil {
+		// 删除日志与账号（IN 批量）
+		if _, err := tx.Exec(`DELETE FROM redeem_logs WHERE game_account_id IN (`+inClause+`)`, args...); err != nil {
 			tx.Rollback()
+			if isDeadlock(err) && attempt < maxRetries {
+				r.logger.Warn("批量删除-删除兑换日志发生死锁，重试", zap.Int("attempt", attempt))
+				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				continue
+			}
 			return 0, err
 		}
-		if _, err := tx.Exec(`DELETE FROM game_accounts WHERE id = ?`, id); err != nil {
+		if _, err := tx.Exec(`DELETE FROM game_accounts WHERE id IN (`+inClause+`)`, args...); err != nil {
 			tx.Rollback()
+			if isDeadlock(err) && attempt < maxRetries {
+				r.logger.Warn("批量删除-删除账号发生死锁，重试", zap.Int("attempt", attempt))
+				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				continue
+			}
 			return 0, err
 		}
-	}
 
-	// 更新受影响兑换码统计
-	for codeID := range affectedMap {
-		if err := r.updateRedeemCodeStats(tx, codeID); err != nil {
-			tx.Rollback()
+		// 增量扣减所有受影响兑换码统计
+		for codeID, c := range delMap {
+			if _, err := tx.Exec(`
+                UPDATE redeem_codes 
+                SET 
+                    total_accounts = GREATEST(0, total_accounts - ?),
+                    success_count  = GREATEST(0, success_count  - ?),
+                    failed_count   = GREATEST(0, failed_count   - ?)
+                WHERE id = ?`, c.total, c.success, c.failed, codeID); err != nil {
+				tx.Rollback()
+				if isDeadlock(err) && attempt < maxRetries {
+					r.logger.Warn("批量删除-增量更新统计发生死锁，重试", zap.Int("attempt", attempt), zap.Int("redeem_code_id", codeID))
+					time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+					continue
+				}
+				return 0, err
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			if isDeadlock(err) && attempt < maxRetries {
+				r.logger.Warn("批量删除-提交事务发生死锁，重试", zap.Int("attempt", attempt))
+				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				continue
+			}
 			return 0, err
 		}
+
+		return len(ids), nil
 	}
 
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-
-	return len(ids), nil
+	return 0, fmt.Errorf("批量删除在重试 %d 次后仍失败（死锁）", maxRetries)
 }
 
 // updateRedeemCodeStats 重新计算兑换码统计数据（与Node版本对齐）
