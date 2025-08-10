@@ -3,6 +3,7 @@ package client
 import (
 	"errors"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,8 @@ func (m *OCRKeyManager) Reload(keys []model.OCRKey) {
 	defer m.mu.Unlock()
 	m.keys = m.keys[:0]
 	m.total = 0
+	// 统计不同provider数量
+	providerCount := map[string]int{}
 	for _, k := range keys {
 		if !k.IsActive || !k.HasQuota || k.Weight <= 0 {
 			continue
@@ -78,7 +81,10 @@ func (m *OCRKeyManager) Reload(keys []model.OCRKey) {
 			}
 		}
 		m.total += effWeight
+		providerCount[provider]++
 	}
+	// 打印一次加载结果（信息级别，便于诊断）
+	m.logger.Info("OCR keys reloaded", zap.Int("usable_keys", len(m.keys)), zap.Any("by_provider", providerCount))
 }
 
 // pick 使用平滑加权轮询（SWRR）选择一个 key
@@ -116,11 +122,14 @@ func (m *OCRKeyManager) RecognizeCaptcha(base64Image string) (string, error) {
 		if wk == nil {
 			break
 		}
+		// 记录选择的key及provider，协助定位未命中阿里云的问题
+		m.logger.Info("OCR selecting key", zap.Int("key_id", wk.key.ID), zap.String("provider", wk.key.Provider))
 		result, err := wk.recognizer.RecognizeCaptcha(base64Image)
 		if err == nil && result != "" {
 			if m.onUsage != nil {
 				m.onUsage(wk.key.ID, true, nil)
 			}
+			m.logger.Info("OCR recognition success", zap.Int("key_id", wk.key.ID), zap.String("provider", wk.key.Provider))
 			return result, nil
 		}
 		lastErr = err
@@ -134,15 +143,17 @@ func (m *OCRKeyManager) RecognizeCaptcha(base64Image string) (string, error) {
 		}
 		// 若是额度/权限相关错误，回调上层标记 has_quota=false
 		if oe, ok := err.(*OCRError); ok {
-			switch oe.Code {
-			// 结合 error_code.md：与额度/权限/QPS强相关的错误
-			case 4, 17, 18, 19, 216604:
-				if m.onKeyExhausted != nil {
-					m.onKeyExhausted(wk.key.ID, oe.Code, oe.Msg)
-				}
-			case 6, 14, 110, 111: // 权限/鉴权/token 失效
-				if m.onKeyExhausted != nil {
-					m.onKeyExhausted(wk.key.ID, oe.Code, oe.Msg)
+			if codeInt, convErr := strconv.Atoi(oe.Code); convErr == nil {
+				switch codeInt {
+				// 结合 error_code.md：与额度/权限/QPS强相关的错误
+				case 4, 17, 18, 19, 216604:
+					if m.onKeyExhausted != nil {
+						m.onKeyExhausted(wk.key.ID, codeInt, oe.Msg)
+					}
+				case 6, 14, 110, 111: // 权限/鉴权/token 失效
+					if m.onKeyExhausted != nil {
+						m.onKeyExhausted(wk.key.ID, codeInt, oe.Msg)
+					}
 				}
 			}
 		}

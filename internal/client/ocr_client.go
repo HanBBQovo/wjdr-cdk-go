@@ -163,7 +163,24 @@ func (c *OCRClient) recognizeGeneral(base64Image string) (string, error) {
 		c.logger.Error("❌ 百度OCR标准版识别失败",
 			zap.Int("error_code", result.ErrorCode),
 			zap.String("error_msg", result.ErrorMsg))
-		return "", &OCRError{Code: result.ErrorCode, Msg: result.ErrorMsg}
+		category := "other"
+		quotaCodes := []int{4, 17, 18, 19, 216604}
+		authCodes := []int{6, 14, 110, 111}
+		for _, code := range quotaCodes {
+			if code == result.ErrorCode {
+				category = "quota"
+				break
+			}
+		}
+		if category == "other" {
+			for _, code := range authCodes {
+				if code == result.ErrorCode {
+					category = "auth"
+					break
+				}
+			}
+		}
+		return "", &OCRError{Code: fmt.Sprintf("%d", result.ErrorCode), Msg: result.ErrorMsg, Category: category}
 	}
 
 	if len(result.WordsResult) > 0 {
@@ -242,7 +259,24 @@ func (c *OCRClient) recognizeAccurate(base64Image string) (string, error) {
 		c.logger.Error("❌ 百度高精度OCR识别失败",
 			zap.Int("error_code", result.ErrorCode),
 			zap.String("error_msg", result.ErrorMsg))
-		return "", &OCRError{Code: result.ErrorCode, Msg: result.ErrorMsg}
+		category := "other"
+		quotaCodes := []int{4, 17, 18, 19, 216604}
+		authCodes := []int{6, 14, 110, 111}
+		for _, code := range quotaCodes {
+			if code == result.ErrorCode {
+				category = "quota"
+				break
+			}
+		}
+		if category == "other" {
+			for _, code := range authCodes {
+				if code == result.ErrorCode {
+					category = "auth"
+					break
+				}
+			}
+		}
+		return "", &OCRError{Code: fmt.Sprintf("%d", result.ErrorCode), Msg: result.ErrorMsg, Category: category}
 	}
 
 	if len(result.WordsResult) > 0 {

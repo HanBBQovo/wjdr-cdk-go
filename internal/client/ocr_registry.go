@@ -26,15 +26,9 @@ func getOCRProvider(name string) (ProviderFactory, bool) {
 	return f, ok
 }
 
-// 预注册内置 Provider：baidu / aliyun
+// 预注册内置 Provider：仅 baidu
 func init() {
 	RegisterOCRProvider("baidu", func(apiKey, secret, region string, logger *zap.Logger) OCRRecognizer {
 		return NewOCRClient(apiKey, secret, logger)
-	})
-	RegisterOCRProvider("aliyun", func(apiKey, secret, region string, logger *zap.Logger) OCRRecognizer {
-		if region == "" {
-			region = "cn-shanghai"
-		}
-		return NewAliyunOCRClient(apiKey, secret, region, logger)
 	})
 }

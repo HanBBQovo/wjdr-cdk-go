@@ -1,8 +1,12 @@
 package client
 
 import (
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -52,6 +56,8 @@ func NewAutomationService(gameClient *GameClient, ocr OCRRecognizer, logger *zap
 		logger:     logger,
 	}
 }
+
+// 已移除验证码容错候选策略，严格按 OCR 返回提交
 
 // VerifyAccount 验证账号有效性
 func (s *AutomationService) VerifyAccount(fid string) (*RedeemResult, error) {
@@ -275,8 +281,39 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 		// 2.2 OCR识别验证码（使用高精度版本）
 		captchaData := captchaResult.Data.(map[string]interface{})
 		captchaImg := captchaData["img"].(string)
+		// 记录验证码图片的短哈希，便于确认是否刷新（批量/单次路径一致）
+		if b64, err := func(s string) ([]byte, error) {
+			if idx := len(s); idx > 0 {
+				// 去掉 dataURL 前缀
+				if p := strings.Index(s, ","); p > 0 && strings.Contains(strings.ToLower(s[:p]), "base64") {
+					s = s[p+1:]
+				}
+			}
+			return base64.StdEncoding.DecodeString(s)
+		}(captchaImg); err == nil {
+			sum := md5.Sum(b64)
+			s.logger.Info("🧩 验证码刷新", zap.String("hash", hex.EncodeToString(sum[:])[:8]))
+		}
+		// 记录验证码图片的短哈希，便于确认是否刷新（对 base64 字符串做标准化后直接哈希，避免解码失败不打日志）
+		{
+			normalized := captchaImg
+			if p := strings.Index(normalized, ","); p > 0 && strings.Contains(strings.ToLower(normalized[:p]), "base64") {
+				normalized = normalized[p+1:]
+			}
+			normalized = strings.ReplaceAll(normalized, "\n", "")
+			normalized = strings.ReplaceAll(normalized, "\r", "")
+			normalized = strings.TrimSpace(normalized)
+			sum := md5.Sum([]byte(normalized))
+			s.logger.Info("🧩 验证码刷新", zap.String("hash", hex.EncodeToString(sum[:])[:8]))
+		}
 
-		captchaValue, err := s.ocr.RecognizeCaptcha(captchaImg)
+		// 先对验证码进行轻量预处理（放大、灰度、二值化）后再识别
+		processedImg, perr := preprocessCaptchaBase64(captchaImg)
+		if perr != nil {
+			// 预处理失败则回退使用原图
+			processedImg = captchaImg
+		}
+		captchaValue, err := s.ocr.RecognizeCaptcha(processedImg)
 		if err != nil || captchaValue == "" {
 			lastError = "验证码识别失败或长度异常"
 			if attempt == maxRetries {
@@ -337,11 +374,11 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 		captchaValue = string(norm)
 		lastCaptchaValue = captchaValue
 
-		// 2.3 执行兑换
-		redeemResult, err := s.gameClient.RedeemCode(giftCode, captchaValue)
-		if err != nil {
+		// 2.3 执行兑换（严格使用OCR识别结果）
+		redeemResult, redeemErr := s.gameClient.RedeemCode(giftCode, captchaValue)
+		if redeemErr != nil {
 			// 视为服务器繁忙，走冷却+重登+重试
-			lastError = fmt.Sprintf("兑换请求异常: %v", err)
+			lastError = fmt.Sprintf("兑换请求异常: %v", redeemErr)
 			if attempt == maxRetries {
 				return &RedeemResult{
 					Success:           false,
@@ -479,7 +516,7 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 							GiftCode:          giftCode,
 							CaptchaRecognized: captchaValue,
 							Error:             fmt.Sprintf("冷却后重新登录请求异常: %v", err),
-							ProcessingTime:    int(time.Since(startTime).Seconds()),
+							ProcessingTime:    int(time.Since(startTime).Milliseconds()),
 							Stage:             "relogin_exception",
 						}, nil
 					}
@@ -765,7 +802,24 @@ func (s *AutomationService) tryOnceNoCooldown(fid, giftCode string) *RedeemResul
 	// 3. OCR识别
 	captchaData := captchaResult.Data.(map[string]interface{})
 	captchaImg := captchaData["img"].(string)
-	captchaValue, err := s.ocr.RecognizeCaptcha(captchaImg)
+	// 记录验证码图片的短哈希，便于确认是否刷新（批量/单次路径一致，直接对标准化 base64 串哈希）
+	{
+		normalized := captchaImg
+		if p := strings.Index(normalized, ","); p > 0 && strings.Contains(strings.ToLower(normalized[:p]), "base64") {
+			normalized = normalized[p+1:]
+		}
+		normalized = strings.ReplaceAll(normalized, "\n", "")
+		normalized = strings.ReplaceAll(normalized, "\r", "")
+		normalized = strings.TrimSpace(normalized)
+		sum := md5.Sum([]byte(normalized))
+		s.logger.Info("🧩 验证码刷新", zap.String("hash", hex.EncodeToString(sum[:])[:8]))
+	}
+	// 先对验证码进行轻量预处理（放大、灰度、二值化）后再识别
+	processedImg, perr := preprocessCaptchaBase64(captchaImg)
+	if perr != nil {
+		processedImg = captchaImg
+	}
+	captchaValue, err := s.ocr.RecognizeCaptcha(processedImg)
 	if err != nil || captchaValue == "" {
 		return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, Error: "验证码识别失败", Stage: "ocr", ErrCode: 40103}
 	}

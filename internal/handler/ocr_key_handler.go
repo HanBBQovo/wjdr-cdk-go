@@ -158,6 +158,10 @@ func (h *OCRKeyHandler) Update(c *gin.Context) {
 	if req.RemainingQuota != nil && *req.RemainingQuota >= 0 {
 		patch["remaining_quota"] = *req.RemainingQuota
 	}
+	if len(patch) == 0 {
+		ErrorResponse(c, http.StatusBadRequest, false, "无有效更新字段")
+		return
+	}
 	if err := h.svc.Update(id, patch); err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, false, "更新失败")
 		return
