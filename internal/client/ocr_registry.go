@@ -26,9 +26,12 @@ func getOCRProvider(name string) (ProviderFactory, bool) {
 	return f, ok
 }
 
-// 预注册内置 Provider：仅 baidu
+// 预注册内置 Provider：baidu + paddle
 func init() {
 	RegisterOCRProvider("baidu", func(apiKey, secret, region string, logger *zap.Logger) OCRRecognizer {
 		return NewOCRClient(apiKey, secret, logger)
+	})
+	RegisterOCRProvider("paddle", func(apiKey, secret, region string, logger *zap.Logger) OCRRecognizer {
+		return NewPaddleOCRClient(logger)
 	})
 }

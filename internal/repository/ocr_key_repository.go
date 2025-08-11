@@ -168,6 +168,20 @@ func (r *OCRKeyRepository) TouchUsage(id int, success bool, errMsg *string) erro
 	return err
 }
 
+// GetProviderByID 查询指定 Key 的 provider
+func (r *OCRKeyRepository) GetProviderByID(id int) (string, error) {
+	var provider string
+	row := r.db.QueryRow("SELECT provider FROM ocr_keys WHERE id = ?", id)
+	if err := row.Scan(&provider); err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		r.logger.Error("查询 OCR Key provider 失败", zap.Error(err), zap.Int("id", id))
+		return "", err
+	}
+	return strings.ToLower(strings.TrimSpace(provider)), nil
+}
+
 // DecrementQuota 扣减一次额度；若降至0则自动 has_quota=false
 func (r *OCRKeyRepository) DecrementQuota(id int) error {
 	query := `UPDATE ocr_keys 

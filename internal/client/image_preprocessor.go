@@ -142,3 +142,5 @@ func colorDistance(c1, c2 color.Color) float64 {
 }
 
 
+
+

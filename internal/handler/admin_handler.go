@@ -299,8 +299,9 @@ func (h *AdminHandler) RegisterRoutes(router *gin.RouterGroup, authMiddleware gi
 
 		// 手动触发RSS抓取（需要管理员权限）
 		admin.POST("/rss/fetch", authMiddleware, func(c *gin.Context) {
-			go h.adminService.CronService.FetchAndProcessRSS()
-			SuccessResponseWithMessage(c, "已触发RSS抓取任务", nil)
+			// 异步：先触发更新，等待10秒，再抓取；接口立即返回
+			go h.adminService.CronService.FetchAndProcessRSSManual()
+			SuccessResponseWithMessage(c, "已触发RSS抓取任务（将先更新源，等待约10秒后开始抓取）", nil)
 		})
 
 		// 获取最近已处理文章（只读面板数据，默认50条）

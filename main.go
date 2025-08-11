@@ -204,6 +204,7 @@ func main() {
 		logger,
 		reloadFunc,
 		cfg.RSS.FeedURL,
+		cfg.RSS.UpdateURL,
 	)
 	// 初始化Admin服务（依赖cronService）
 	adminService := service.NewAdminService(adminRepo, accountService, cronService, logger)

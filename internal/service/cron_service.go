@@ -1,18 +1,17 @@
 package service
 
 import (
-	"time"
-	"wjdr-backend-go/internal/client"
-	"wjdr-backend-go/internal/repository"
-	"wjdr-backend-go/internal/worker"
-
 	"encoding/xml"
 	"html"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
+	"wjdr-backend-go/internal/client"
 	"wjdr-backend-go/internal/model"
+	"wjdr-backend-go/internal/repository"
+	"wjdr-backend-go/internal/worker"
 
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
@@ -33,6 +32,7 @@ type CronService struct {
 	logger        *zap.Logger
 	reloadOCRKeys func() error
 	feedURL       string
+	updateURL     string
 }
 
 func NewCronService(
@@ -48,6 +48,7 @@ func NewCronService(
 	logger *zap.Logger,
 	reloadOCRKeys func() error,
 	feedURL string,
+	updateURL string,
 ) *CronService {
 	// 创建cron实例，使用秒级精度 + 本地时区
 	c := cron.New(cron.WithSeconds(), cron.WithLocation(time.Local))
@@ -66,6 +67,7 @@ func NewCronService(
 		ocrKeySvc:     ocrKeySvc,
 		reloadOCRKeys: reloadOCRKeys,
 		feedURL:       feedURL,
+		updateURL:     updateURL,
 	}
 }
 
@@ -101,14 +103,18 @@ func (s *CronService) Start() error {
 		return err
 	}
 
-	// 5. RSS 抓取：每天12:05、20:05执行
+	// 5. RSS 抓取：每天11:02、16:02、20:02执行
 	if s.feedURL != "" && s.rssRepo != nil && s.redeemSvc != nil {
-		if _, err = s.cron.AddFunc("0 5 12 * * *", s.FetchAndProcessRSS); err != nil {
-			s.logger.Error("添加RSS(12:05)任务失败", zap.Error(err))
+		if _, err = s.cron.AddFunc("0 2 11 * * *", s.FetchAndProcessRSS); err != nil {
+			s.logger.Error("添加RSS(11:02)任务失败", zap.Error(err))
 			return err
 		}
-		if _, err = s.cron.AddFunc("0 5 20 * * *", s.FetchAndProcessRSS); err != nil {
-			s.logger.Error("添加RSS(20:05)任务失败", zap.Error(err))
+		if _, err = s.cron.AddFunc("0 2 16 * * *", s.FetchAndProcessRSS); err != nil {
+			s.logger.Error("添加RSS(16:02)任务失败", zap.Error(err))
+			return err
+		}
+		if _, err = s.cron.AddFunc("0 2 20 * * *", s.FetchAndProcessRSS); err != nil {
+			s.logger.Error("添加RSS(20:02)任务失败", zap.Error(err))
 			return err
 		}
 	}
@@ -123,8 +129,9 @@ func (s *CronService) Start() error {
 	s.logger.Info("  - 00:00(每月1日) 重置OCR Key额度")
 	s.logger.Info("  - 03:00 刷新所有用户数据")
 	if s.feedURL != "" && s.rssRepo != nil && s.redeemSvc != nil {
-		s.logger.Info("  - 12:05 RSS 抓取并处理兑换码")
-		s.logger.Info("  - 20:05 RSS 抓取并处理兑换码")
+		s.logger.Info("  - 11:02 RSS 抓取并处理兑换码")
+		s.logger.Info("  - 16:02 RSS 抓取并处理兑换码")
+		s.logger.Info("  - 20:02 RSS 抓取并处理兑换码")
 	}
 
 	return nil
@@ -365,6 +372,33 @@ func (s *CronService) FetchAndProcessRSS() {
 	}
 
 	s.logger.Info("✅ RSS处理完成", zap.Int("entries_checked", len(feed.Entries)), zap.Int("entries_processed", processed), zap.Int("codes_created", created))
+}
+
+// FetchAndProcessRSSManual 手动抓取：先调用更新URL，再等待固定时长后抓取RSS
+func (s *CronService) FetchAndProcessRSSManual() {
+	// 1) 先更新源站内容
+	if strings.TrimSpace(s.updateURL) != "" {
+		s.logger.Info("🔄 触发RSS源更新", zap.String("url", s.updateURL))
+		req, _ := http.NewRequest("GET", s.updateURL, nil)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; RSSUpdater/1.0)")
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			s.logger.Warn("RSS 更新请求失败", zap.Error(err))
+		} else {
+			_ = resp.Body.Close()
+			s.logger.Info("✅ RSS 更新请求完成", zap.Int("status", resp.StatusCode))
+		}
+	} else {
+		s.logger.Warn("未配置 RSS 更新URL，跳过更新步骤")
+	}
+
+	// 2) 等待约10秒
+	s.logger.Info("⏳ 等待10秒后开始抓取RSS…")
+	time.Sleep(10 * time.Second)
+
+	// 3) 执行常规抓取
+	s.FetchAndProcessRSS()
 }
 
 // cleanExpiredRedeemCodes 清理过期兑换码（与Node版本对齐）

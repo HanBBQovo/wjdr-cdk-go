@@ -52,12 +52,14 @@ func (s *OCRKeyService) MarkQuota(id int, hasQuota bool) error {
 }
 
 func (s *OCRKeyService) TouchUsage(id int, success bool, errMsg *string) error {
-	// 调用一次即视为额度消耗一次：remaining_quota -= 1；降至0自动 has_quota=false
+	// 对于 provider=paddle（自研本地模型）不扣减额度；其他正常扣减
+	prov, _ := s.repo.GetProviderByID(id)
 	if err := s.repo.TouchUsage(id, success, errMsg); err != nil {
 		return err
 	}
-	// 扣减额度
-	_ = s.repo.DecrementQuota(id)
+	if prov != "paddle" {
+		_ = s.repo.DecrementQuota(id)
+	}
 	return nil
 }
 
