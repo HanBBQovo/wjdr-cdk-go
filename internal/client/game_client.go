@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -17,12 +18,14 @@ import (
 
 // GameClient 游戏API客户端（完全复刻Node版本逻辑）
 type GameClient struct {
-	salt     string
-	baseURL  string
-	fid      string
-	nickname string
-	client   *http.Client
-	logger   *zap.Logger
+	salt              string
+	baseURL           string
+	fid               string
+	nickname          string
+	client            *http.Client
+	logger            *zap.Logger
+	retryCount        int // 统计重试次数
+	networkErrorCount int // 统计网络错误次数
 }
 
 // GameResponse 游戏API通用响应
@@ -73,7 +76,19 @@ func NewGameClient(logger *zap.Logger) *GameClient {
 		salt:    "Uiv#87#SPan.ECsp", // 与Node版本一致
 		baseURL: "https://wjdr-giftcode-api.campfiregames.cn/api",
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 60 * time.Second, // 增加到60秒
+			Transport: &http.Transport{
+				Dial: (&net.Dialer{
+					Timeout: 15 * time.Second, // 连接超时
+				}).Dial,
+				TLSHandshakeTimeout:   10 * time.Second, // TLS握手超时
+				ResponseHeaderTimeout: 30 * time.Second, // 响应头超时
+				ExpectContinueTimeout: 1 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+				MaxIdleConns:          10,
+				MaxIdleConnsPerHost:   2,
+				DisableKeepAlives:     false,
+			},
 		},
 		logger: logger,
 	}
@@ -163,6 +178,76 @@ func (c *GameClient) isSuccess(errCode int) bool {
 	return errCode == 20000 // 兑换成功
 }
 
+// isTemporaryError 检查是否为临时错误（可重试）
+func (c *GameClient) isTemporaryError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 检查网络超时错误
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+
+	// 检查连接相关错误
+	errStr := err.Error()
+	return strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "context deadline exceeded")
+}
+
+// doRequestWithRetry 执行HTTP请求，带重试机制
+func (c *GameClient) doRequestWithRetry(req *http.Request, maxRetries int) (*http.Response, error) {
+	var lastErr error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// 等待一段时间再重试，使用指数退避
+			waitTime := time.Duration(attempt) * 2 * time.Second
+			c.logger.Debug("等待重试",
+				zap.Int("attempt", attempt),
+				zap.Duration("wait_time", waitTime))
+			time.Sleep(waitTime)
+		}
+
+		resp, err := c.client.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+
+		lastErr = err
+
+		// 如果不是临时错误，直接返回
+		if !c.isTemporaryError(err) {
+			c.logger.Error("非临时错误，停止重试",
+				zap.Error(err),
+				zap.Int("attempt", attempt))
+			return nil, err
+		}
+
+		c.logger.Warn("网络请求失败，准备重试",
+			zap.Error(err),
+			zap.Int("attempt", attempt+1),
+			zap.Int("max_retries", maxRetries+1))
+
+		// 统计重试次数
+		c.retryCount++
+	}
+
+	c.logger.Error("重试次数已用完",
+		zap.Error(lastErr),
+		zap.Int("max_retries", maxRetries+1),
+		zap.Int("total_retries", c.retryCount),
+		zap.Int("total_network_errors", c.networkErrorCount))
+
+	// 统计网络错误次数
+	c.networkErrorCount++
+
+	return nil, lastErr
+}
+
 // generateSign 生成签名（与Node版本完全对齐）
 func (c *GameClient) generateSign(fid, timeMs string, init, cdk, captchaCode *string) string {
 	params := map[string]string{
@@ -223,12 +308,21 @@ func (c *GameClient) Login(fid string) (*GameResult, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.doRequestWithRetry(req, 2) // 最多重试2次
 	if err != nil {
-		c.logger.Error("❌ 登录请求异常", zap.Error(err))
+		c.logger.Error("❌ 登录请求异常",
+			zap.Error(err),
+			zap.String("fid", fid))
+
+		// 提供更友好的错误信息
+		errorMsg := "网络连接异常"
+		if c.isTemporaryError(err) {
+			errorMsg = "网络超时，请稍后重试"
+		}
+
 		return &GameResult{
 			Success: false,
-			Error:   err.Error(),
+			Error:   errorMsg,
 		}, nil
 	}
 	defer resp.Body.Close()
@@ -324,12 +418,22 @@ func (c *GameClient) GetCaptcha() (*GameResult, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.doRequestWithRetry(req, 2) // 最多重试2次
 	if err != nil {
-		c.logger.Error("❌ 获取验证码异常", zap.Error(err))
+		c.logger.Error("❌ 获取验证码异常",
+			zap.Error(err),
+			zap.String("fid", c.fid),
+			zap.String("user", c.nickname))
+
+		// 提供更友好的错误信息
+		errorMsg := "网络连接异常"
+		if c.isTemporaryError(err) {
+			errorMsg = "网络超时，请稍后重试"
+		}
+
 		return &GameResult{
 			Success: false,
-			Error:   err.Error(),
+			Error:   errorMsg,
 		}, nil
 	}
 	defer resp.Body.Close()
@@ -426,12 +530,23 @@ func (c *GameClient) RedeemCode(giftCode, captchaValue string) (*GameResult, err
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.doRequestWithRetry(req, 2) // 最多重试2次
 	if err != nil {
-		c.logger.Error("❌ 兑换请求异常", zap.Error(err))
+		c.logger.Error("❌ 兑换请求异常",
+			zap.Error(err),
+			zap.String("code", giftCode),
+			zap.String("fid", c.fid),
+			zap.String("user", c.nickname))
+
+		// 提供更友好的错误信息
+		errorMsg := "网络连接异常"
+		if c.isTemporaryError(err) {
+			errorMsg = "网络超时，请稍后重试"
+		}
+
 		return &GameResult{
 			Success: false,
-			Error:   err.Error(),
+			Error:   errorMsg,
 		}, nil
 	}
 	defer resp.Body.Close()

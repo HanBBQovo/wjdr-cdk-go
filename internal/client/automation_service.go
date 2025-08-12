@@ -478,6 +478,53 @@ func (s *AutomationService) RedeemSingle(fid, giftCode string) (*RedeemResult, e
 				}, nil
 			}
 
+			// 40009 登录状态失效：立即尝试重新登录并继续下一轮
+			if redeemResult.ErrCode == 40009 {
+				s.logger.Warn("🔐 登录状态失效，尝试重新登录后重试",
+					zap.Int("attempt", attempt))
+				reLoginResult, loginErr := s.gameClient.Login(fid)
+				if loginErr != nil {
+					if attempt == maxRetries {
+						return &RedeemResult{
+							Success:           false,
+							FID:               fid,
+							GiftCode:          giftCode,
+							CaptchaRecognized: captchaValue,
+							Error:             fmt.Sprintf("重新登录请求异常: %v", loginErr),
+							ProcessingTime:    int(time.Since(startTime).Milliseconds()),
+							Stage:             "relogin_exception",
+							Attempts:          attempt,
+						}, nil
+					}
+					// 非最后一轮则继续尝试
+					time.Sleep(3 * time.Second)
+					continue
+				}
+				if !reLoginResult.Success {
+					lastError = fmt.Sprintf("重新登录失败: %s", reLoginResult.Error)
+					if attempt == maxRetries {
+						return &RedeemResult{
+							Success:           false,
+							FID:               fid,
+							GiftCode:          giftCode,
+							CaptchaRecognized: captchaValue,
+							Error:             lastError,
+							ProcessingTime:    int(time.Since(startTime).Milliseconds()),
+							Stage:             "relogin",
+							ErrCode:           reLoginResult.ErrCode,
+							Attempts:          attempt,
+						}, nil
+					}
+					s.logger.Debug("⚠️ 重新登录失败，继续重试...", zap.Int("attempt", attempt))
+					time.Sleep(3 * time.Second)
+					continue
+				}
+				s.logger.Debug("✅ 重新登录成功，继续尝试(将重新获取验证码)...")
+				// 成功重登后直接进入下一轮（外层会重新获取验证码并尝试兑换）
+				time.Sleep(3 * time.Second)
+				continue
+			}
+
 			// 检查是否为验证码错误或验证码过期（40103/40102），均视为需要重新获取验证码
 			if redeemResult.ErrCode == 40103 || redeemResult.ErrCode == 40102 {
 				if attempt == maxRetries {
@@ -714,6 +761,10 @@ func (s *AutomationService) RedeemBatch(accounts []Account, giftCode string) ([]
 				st.nextReadyAt = time.Now().Add(60 * time.Second)
 				s.logger.Warn("⏳ 服务器繁忙，账号进入冷却队列", zap.String("fid", st.acc.FID), zap.Int("cooldowns", st.cooldowns))
 			}
+		case 40009: // 登录状态失效 → 短退避3秒后重试（下次会先登录）
+			st.attemptsInCycle++
+			st.nextReadyAt = time.Now().Add(3 * time.Second)
+			s.logger.Debug("🔐 登录状态失效，短暂退避后重试", zap.String("fid", st.acc.FID), zap.Int("attempt_in_cycle", st.attemptsInCycle))
 		case 40102, 40103: // 验证码过期/错误 → 3次内快速重试；超过3次触发一次60s冷却
 			st.attemptsInCycle++
 			if st.attemptsInCycle >= 3 {
@@ -858,6 +909,37 @@ func (s *AutomationService) tryOnceNoCooldown(fid, giftCode string) *RedeemResul
 	}
 	if redeemResult.ErrCode == 40102 || redeemResult.ErrCode == 40103 { // 验证码问题
 		return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: redeemResult.Error, Stage: "redeem", ErrCode: redeemResult.ErrCode}
+	}
+	if redeemResult.ErrCode == 40009 { // 登录状态失效：立即尝试重新登录并再兑换一次（不做60s冷却）
+		reLoginResult, loginErr := s.gameClient.Login(fid)
+		if loginErr != nil || !reLoginResult.Success {
+			// 重登失败则直接返回本次错误，由外层调度决定是否继续
+			if reLoginResult != nil && !reLoginResult.Success {
+				return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: reLoginResult.Error, Stage: "relogin", ErrCode: reLoginResult.ErrCode}
+			}
+			return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: "重新登录请求异常", Stage: "relogin_exception", ErrCode: 40101}
+		}
+		// 重登成功后立刻再试一次兑换
+		second, err2 := s.gameClient.RedeemCode(giftCode, captchaValue)
+		if err2 != nil {
+			return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: "兑换请求异常", Stage: "redeem_exception", ErrCode: 40101}
+		}
+		if second.Success {
+			processingTime := int(time.Since(startTime).Milliseconds())
+			return &RedeemResult{Success: true, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Message: "兑换成功", ProcessingTime: processingTime, Stage: "completed", ErrCode: second.ErrCode, Attempts: 1}
+		}
+		// 第二次仍失败：将其按分类返回，交给外层调度
+		if second.ErrCode == 40101 {
+			return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: second.Error, Stage: "redeem", ErrCode: 40101}
+		}
+		if second.ErrCode == 40102 || second.ErrCode == 40103 {
+			return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: second.Error, Stage: "redeem", ErrCode: second.ErrCode}
+		}
+		if second.IsFatal {
+			return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: second.Error, Stage: "redeem", ErrCode: second.ErrCode, IsFatal: true}
+		}
+		// 其余非致命错误直接返回
+		return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: second.Error, Stage: "redeem", ErrCode: second.ErrCode}
 	}
 	if redeemResult.IsFatal {
 		return &RedeemResult{Success: false, FID: fid, GiftCode: giftCode, CaptchaRecognized: captchaValue, Error: redeemResult.Error, Stage: "redeem", ErrCode: redeemResult.ErrCode, IsFatal: true}
