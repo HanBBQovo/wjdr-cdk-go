@@ -72,8 +72,8 @@ func Load() *Config {
 	viper.SetDefault("DB_MAX_IDLE_CONNS", 20)
 	viper.SetDefault("WORKER_CONCURRENCY", 16)
 	viper.SetDefault("RATE_LIMIT_QPS", 8)
-	viper.SetDefault("RSS_FEED_URL", "http://110.40.141.196:10082/feedAtom/4393841743004e91fc4f0d8b43a3aee8")
-	viper.SetDefault("RSS_UPDATE_URL", "http://110.40.141.196:10082/updateFeedAll?key=313b1e3098a7e7765260e9b51e16a47a")
+	viper.SetDefault("RSS_FEED_URL", "http://120.48.143.190:10082/feedAtom/4af6b7ea933926777b95712e9ec3fb1a")
+	viper.SetDefault("RSS_UPDATE_URL", "http://120.48.143.190:10082/updateFeedAll?key=313b1e3098a7e7765260e9b51e16a47a")
 	viper.SetDefault("ACCOUNT_ADD_SALT", "8$#@!@#J$%^&*T()_+L")
 
 	if err := viper.ReadInConfig(); err != nil {
