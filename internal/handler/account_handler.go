@@ -36,21 +36,25 @@ func (h *AccountHandler) GetAllAccounts(c *gin.Context) {
 	SuccessResponse(c, accounts)
 }
 
-// CreateAccount 添加新账号（与Node版本对齐）
+// CreateAccount 添加新账号（带签名验证）
 // POST /api/accounts
 func (h *AccountHandler) CreateAccount(c *gin.Context) {
-	var request struct {
-		FID string `json:"fid" binding:"required"`
+	// 从签名验证中间件获取已验证的参数
+	fid, exists := c.Get("verified_fid")
+	if !exists {
+		ErrorResponse(c, http.StatusBadRequest, false, "FID验证失败")
+		return
 	}
 
-	if err := c.ShouldBindJSON(&request); err != nil {
+	fidStr, ok := fid.(string)
+	if !ok || fidStr == "" {
 		ErrorResponse(c, http.StatusBadRequest, false, "FID不能为空")
 		return
 	}
 
-	h.logger.Info("📝 收到添加账号请求", zap.String("fid", request.FID))
+	h.logger.Info("📝 收到添加账号请求", zap.String("fid", fidStr))
 
-	result, err := h.accountService.CreateAccount(request.FID)
+	result, err := h.accountService.CreateAccount(fidStr)
 	if err != nil {
 		h.logger.Error("添加账号失败", zap.Error(err))
 		ErrorResponse(c, http.StatusInternalServerError, false, "添加账号失败")
@@ -189,15 +193,15 @@ func (h *AccountHandler) FixAllStats(c *gin.Context) {
 	SuccessResponseWithMessage(c, result.Message, result.Data)
 }
 
-// RegisterAccountRoutes 注册账号相关路由（与Node版本对齐）
-func (h *AccountHandler) RegisterRoutes(router *gin.RouterGroup, authMiddleware gin.HandlerFunc) {
+// RegisterAccountRoutes 注册账号相关路由（带签名验证）
+func (h *AccountHandler) RegisterRoutes(router *gin.RouterGroup, authMiddleware gin.HandlerFunc, signMiddleware gin.HandlerFunc) {
 	accounts := router.Group("/accounts")
 	{
 		// 获取所有账号（无需认证）
 		accounts.GET("", h.GetAllAccounts)
 
-		// 添加新账号（无需认证）
-		accounts.POST("", h.CreateAccount)
+		// 添加新账号（需要签名验证）
+		accounts.POST("", signMiddleware, h.CreateAccount)
 
 		// 手动验证账号（无需认证）
 		accounts.POST("/:id/verify", h.VerifyAccount)

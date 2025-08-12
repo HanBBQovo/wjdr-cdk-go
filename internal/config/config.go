@@ -13,6 +13,7 @@ type Config struct {
 	OCR      OCRConfig      `mapstructure:"ocr"`
 	Worker   WorkerConfig   `mapstructure:"worker"`
 	RSS      RSSConfig      `mapstructure:"rss"`
+	Security SecurityConfig `mapstructure:"security"`
 }
 
 type ServerConfig struct {
@@ -46,6 +47,10 @@ type RSSConfig struct {
 	UpdateURL string `mapstructure:"update_url"`
 }
 
+type SecurityConfig struct {
+	AccountAddSalt string `mapstructure:"account_add_salt"`
+}
+
 func Load() *Config {
 	viper.SetConfigName(".env")
 	viper.SetConfigType("env")
@@ -69,6 +74,7 @@ func Load() *Config {
 	viper.SetDefault("RATE_LIMIT_QPS", 8)
 	viper.SetDefault("RSS_FEED_URL", "http://110.40.141.196:10082/feedAtom/4393841743004e91fc4f0d8b43a3aee8")
 	viper.SetDefault("RSS_UPDATE_URL", "http://110.40.141.196:10082/updateFeedAll?key=313b1e3098a7e7765260e9b51e16a47a")
+	viper.SetDefault("ACCOUNT_ADD_SALT", "8$#@!@#J$%^&*T()_+L")
 
 	if err := viper.ReadInConfig(); err != nil {
 		log.Printf("配置文件读取失败，使用环境变量: %v", err)
@@ -97,6 +103,8 @@ func Load() *Config {
 
 	config.RSS.FeedURL = viper.GetString("RSS_FEED_URL")
 	config.RSS.UpdateURL = viper.GetString("RSS_UPDATE_URL")
+
+	config.Security.AccountAddSalt = viper.GetString("ACCOUNT_ADD_SALT")
 
 	return &config
 }

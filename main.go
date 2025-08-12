@@ -228,6 +228,9 @@ func main() {
 	// 创建认证中间件
 	authMiddleware := handler.AuthMiddleware(adminService)
 
+	// 创建签名验证中间件
+	signMiddleware := handler.SignVerificationMiddleware(cfg.Security.AccountAddSalt, logger)
+
 	// 注册API路由
 	api := router.Group("/api")
 	{
@@ -240,7 +243,7 @@ func main() {
 				"version":   "1.0.0",
 			})
 		})
-		accountHandler.RegisterRoutes(api, authMiddleware)
+		accountHandler.RegisterRoutes(api, authMiddleware, signMiddleware)
 		adminHandler.RegisterRoutes(api, authMiddleware)
 		ocrKeyHandler.RegisterRoutes(api, authMiddleware)
 		redeemHandler.RegisterRoutes(api, authMiddleware)
