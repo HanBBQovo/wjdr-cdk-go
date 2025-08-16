@@ -257,11 +257,7 @@ func (s *CronService) FetchAndProcessRSS() {
 		return
 	}
 
-	// 关键词判断：标题含“内含兑换码”或“兑换码”才解析正文
-	hasKeyword := func(title string) bool {
-		t := strings.TrimSpace(title)
-		return strings.Contains(t, "内含兑换码") || strings.Contains(t, "兑换码")
-	}
+	// 解析所有文章：不再基于标题关键词过滤
 
 	// 从HTML正文提取兑换码：先去标签/解码实体，再匹配
 	stripHTML := func(in string) string {
@@ -294,11 +290,7 @@ func (s *CronService) FetchAndProcessRSS() {
 		}
 		processed++
 
-		if !hasKeyword(e.Title) {
-			// 标题不含关键词也标记已处理，避免重复
-			_ = s.rssRepo.MarkProcessed(e.ID, e.Title, e.Link.Href)
-			continue
-		}
+		// 不再根据标题关键词过滤，统一进入正文解析
 
 		// 提取兑换码
 		text := stripHTML(e.Content)

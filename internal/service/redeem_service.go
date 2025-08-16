@@ -70,63 +70,7 @@ func (s *RedeemService) SubmitRedeemCode(code string, isLong bool) (*model.APIRe
 		}, nil
 	}
 
-	// 获取活跃账号列表用于预验证
-	accounts, err := s.accountRepo.GetAll()
-	if err != nil {
-		s.logger.Error("获取账号列表失败", zap.Error(err))
-		return &model.APIResponse{
-			Success: false,
-			Error:   "获取账号列表失败",
-		}, err
-	}
-
-	// 筛选活跃且已验证的账号
-	var activeAccounts []model.Account
-	for _, acc := range accounts {
-		if acc.IsActive && acc.IsVerified {
-			activeAccounts = append(activeAccounts, acc)
-		}
-	}
-
-	// 选择测试账号进行预验证（与Node逻辑一致）
-	var testFID string
-	if len(activeAccounts) > 0 {
-		// 有活跃账号时使用第一个活跃账号
-		testFID = activeAccounts[0].FID
-		s.logger.Info("📋 使用活跃账号进行预验证",
-			zap.String("test_fid", testFID))
-	} else {
-		// 没有活跃账号时使用备用FID（与Node逻辑一致）
-		testFID = "362872592"
-		s.logger.Info("📋 使用备用账号进行预验证",
-			zap.String("test_fid", testFID))
-	}
-
-	// 预验证兑换码（与Node逻辑一致）
-	s.logger.Info("🔍 开始预验证兑换码", zap.String("code", code))
-
-	verifyResult, err := s.automationSvc.RedeemSingle(testFID, code)
-	if err != nil {
-		s.logger.Error("预验证异常", zap.Error(err))
-		return &model.APIResponse{
-			Success: false,
-			Error:   "预验证时发生异常",
-		}, err
-	}
-
-	// 检查预验证结果
-	if verifyResult.IsFatal {
-		s.logger.Warn("❌ 预验证发现致命错误",
-			zap.String("error", verifyResult.Error),
-			zap.Int("err_code", verifyResult.ErrCode))
-
-		return &model.APIResponse{
-			Success: false,
-			Error:   fmt.Sprintf("兑换码验证失败: %s", verifyResult.Error),
-		}, nil
-	}
-
-	// 预验证通过，创建兑换码记录
+	// 直接创建兑换码记录（同步返回，后台异步处理）
 	redeemCodeID, err := s.redeemRepo.CreateRedeemCode(code, isLong)
 	if err != nil {
 		s.logger.Error("创建兑换码失败", zap.Error(err))
@@ -146,7 +90,7 @@ func (s *RedeemService) SubmitRedeemCode(code string, isLong bool) (*model.APIRe
 		}, err
 	}
 
-	s.logger.Info("✅ 预验证通过，兑换码已创建",
+	s.logger.Info("✅ 兑换码已创建",
 		zap.Int("redeem_code_id", redeemCodeID),
 		zap.String("code", code))
 
@@ -164,7 +108,7 @@ func (s *RedeemService) SubmitRedeemCode(code string, isLong bool) (*model.APIRe
 
 	return &model.APIResponse{
 		Success: true,
-		Message: "兑换码验证通过，正在后台处理...",
+		Message: "兑换码已提交，正在后台处理...",
 		Data:    redeemCode,
 	}, nil
 }

@@ -218,6 +218,31 @@ func (wp *WorkerPool) processRedeemJob(job *Job) error {
 		return fmt.Errorf("没有可用的账号")
 	}
 
+	// 后台预验证：使用第一个活跃已验证账号或备用FID
+	testFID := "362872592"
+	if accounts[0].FID != "" {
+		testFID = accounts[0].FID
+	}
+	wp.logger.Info("🔍 后台预验证兑换码",
+		zap.String("code", redeemCode.Code),
+		zap.String("test_fid", testFID))
+	verifyResult, err := wp.automationSvc.RedeemSingle(testFID, redeemCode.Code)
+	if err != nil {
+		// 网络或服务异常，返回错误以触发重试
+		return fmt.Errorf("预验证异常: %w", err)
+	}
+	if verifyResult.IsFatal {
+		wp.logger.Warn("❌ 预验证致命错误，终止任务",
+			zap.String("error", verifyResult.Error),
+			zap.Int("err_code", verifyResult.ErrCode),
+			zap.String("code", redeemCode.Code))
+		// 将兑换码直接标记为完成，避免重复尝试
+		if err := wp.redeemRepo.UpdateRedeemCodeStatus(redeemCode.ID, "completed", 0); err != nil {
+			return fmt.Errorf("更新兑换码完成状态失败: %w", err)
+		}
+		return nil
+	}
+
 	wp.logger.Info("📦 开始批量兑换",
 		zap.String("code", redeemCode.Code),
 		zap.Int("accounts_count", len(accounts)))
